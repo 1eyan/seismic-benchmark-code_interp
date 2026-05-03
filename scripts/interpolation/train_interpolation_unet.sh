@@ -11,6 +11,8 @@ CUDA_VISIBLE_DEVICES="6,7" # 物理 GPU，逗号分隔
 NPROC_PER_NODE=2           # 须与可见 GPU 个数一致
 N=5                        # 循环次数
 START_SEED=42              # 第 1 次 seed，之后为 START_SEED+1, ...
+MASK_MODE="uniform"        # uniform | random | continuous
+MASK_RATIO="0.5"           # 缺失率，范围 (0, 1)
 TORCHRUN_EXTRA=""          # 可选：追加给 torchrun，例如 "--standalone"
 # ------------------------------------
 
@@ -50,7 +52,9 @@ for ((i = 0; i < N; i++)); do
   echo "[$(date -Iseconds)] (${i}+1)/${N} name=${run_name} seed=${seed}"
   cd "${REPO_ROOT}"
   # shellcheck disable=SC2086
-  torchrun ${TORCHRUN_EXTRA} --nproc_per_node="${NPROC_PER_NODE}" "${PY_SCRIPT}" --config "${tmpcfg}"
+  torchrun ${TORCHRUN_EXTRA} --nproc_per_node="${NPROC_PER_NODE}" \
+    "${PY_SCRIPT}" --config "${tmpcfg}" \
+    --mask-mode "${MASK_MODE}" --mask-ratio "${MASK_RATIO}"
 done
 
 echo "[$(date -Iseconds)] Done ${N} runs (seed ${START_SEED}..$((START_SEED + N - 1)))."

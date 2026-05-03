@@ -94,12 +94,12 @@ def _build_patch_pairs(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
         )
 
     if "mask_traces" not in skip:
-        masked, _ = mask_traces(
-            shots,
-            mode="uniform",
-            ratio=0.5,
-            uniform_stride=int(prep.get("uniform_stride", 2)),
-        )
+        mask_mode = str(prep.get("mask_mode", "uniform"))
+        mask_ratio = float(prep.get("mask_ratio", 0.5))
+        mask_kwargs: Dict[str, Any] = {"mode": mask_mode, "ratio": mask_ratio}
+        if mask_mode == "uniform":
+            mask_kwargs["uniform_stride"] = int(prep.get("uniform_stride", 2))
+        masked, _ = mask_traces(shots, **mask_kwargs)
     else:
         masked = shots
 
@@ -129,12 +129,33 @@ def parse_args() -> argparse.Namespace:
         default=default_config_relpath_for_train_script(__file__),
         help="Path to interpolation config.",
     )
+    parser.add_argument(
+        "--mask-mode",
+        type=str,
+        default="uniform",
+        choices=["uniform", "random", "continuous"],
+        help="Trace masking mode.",
+    )
+    parser.add_argument(
+        "--mask-ratio",
+        type=float,
+        default=0.5,
+        help="Trace missing ratio in (0, 1).",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
+
+    # Inject CLI mask args into preprocess config so _build_patch_pairs can read them.
+    cfg.setdefault("preprocess", {})
+    cfg["preprocess"]["mask_mode"] = args.mask_mode
+    cfg["preprocess"]["mask_ratio"] = args.mask_ratio
+
+    ratio_pct = int(round(args.mask_ratio * 100))
+    cfg["experiment"]["name"] = f"{cfg['experiment']['name']}_{args.mask_mode}_miss{ratio_pct}"
 
     distributed, rank, local_rank, world_size = init_distributed()
 
