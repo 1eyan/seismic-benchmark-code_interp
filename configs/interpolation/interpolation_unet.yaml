@@ -83,6 +83,13 @@ log:
   plot_interval: 5
 
 inference:
+  # Separate data source for inference (avoids overlap with training data).
+  # If omitted, falls back to ``data`` (same as training).
+  data:
+    segy:
+      path: /data/shared/SEGC3/SEG_45Shot_shots1-9.sgy   # TODO: replace with independent inference volume
+      traces_per_shot: 201
+      time_downsample: 1
   checkpoint: results/interp_unet_base/checkpoints/epoch_0049.pt
   output_dir: results/interp_unet_base/inference
   n_viz_shots: 5

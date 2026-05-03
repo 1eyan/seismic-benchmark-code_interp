@@ -107,6 +107,19 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Save predicted/input/target shots as .npy files. Overrides config inference.save_npy.",
     )
+    parser.add_argument(
+        "--mask-mode",
+        type=str,
+        default=None,
+        choices=["uniform", "random", "continuous"],
+        help="Trace masking mode. Must match training. Defaults to config preprocess.mask_mode.",
+    )
+    parser.add_argument(
+        "--mask-ratio",
+        type=float,
+        default=None,
+        help="Trace missing ratio in (0, 1). Must match training. Defaults to config preprocess.mask_ratio.",
+    )
     return parser.parse_args()
 
 
@@ -149,6 +162,11 @@ def main() -> None:
         else infer_cfg.get("save_npy", False)
     )
 
+    # Mask params: CLI > config preprocess > defaults
+    prep = cfg.get("preprocess", {})
+    mask_mode = args.mask_mode if args.mask_mode is not None else str(prep.get("mask_mode", "uniform"))
+    mask_ratio = args.mask_ratio if args.mask_ratio is not None else float(prep.get("mask_ratio", 0.5))
+
     # ------------------------------------------------------------------
     # 1. Build model and load checkpoint
     # ------------------------------------------------------------------
@@ -160,11 +178,18 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 2. Load volume and preprocess (same pipeline as training)
     # ------------------------------------------------------------------
+    # Prefer inference.data over data (allows independent inference volume).
+    infer_data_cfg = infer_cfg.get("data", {})
     data_cfg = None
     for key in ("segy", "npy", "mat"):
-        if key in cfg["data"]:
-            data_cfg = cfg["data"][key]
+        if key in infer_data_cfg:
+            data_cfg = infer_data_cfg[key]
             break
+    if data_cfg is None:
+        for key in ("segy", "npy", "mat"):
+            if key in cfg["data"]:
+                data_cfg = cfg["data"][key]
+                break
     if data_cfg is None:
         raise ValueError("No data source found in config.")
 
@@ -191,12 +216,10 @@ def main() -> None:
 
     # input = masked traces; target = unmasked (original) traces
     if "mask_traces" not in skip:
-        masked, _ = mask_traces(
-            shots,
-            mode="uniform",
-            ratio=0.5,
-            uniform_stride=int(prep.get("uniform_stride", 2)),
-        )
+        mask_kwargs: Dict[str, Any] = {"mode": mask_mode, "ratio": mask_ratio}
+        if mask_mode == "uniform":
+            mask_kwargs["uniform_stride"] = int(prep.get("uniform_stride", 2))
+        masked, _ = mask_traces(shots, **mask_kwargs)
     else:
         masked = shots
     shots_norm = shots

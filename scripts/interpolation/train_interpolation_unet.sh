@@ -13,8 +13,13 @@ N=5                        # 循环次数
 START_SEED=42              # 第 1 次 seed，之后为 START_SEED+1, ...
 MASK_MODE="uniform"        # uniform | random | continuous
 MASK_RATIO="0.5"           # 缺失率，范围 (0, 1)
+MASTER_PORT="auto"         # 固定端口号，或 "auto" 每次自动找空闲端口
 TORCHRUN_EXTRA=""          # 可选：追加给 torchrun，例如 "--standalone"
 # ------------------------------------
+
+_pick_port() {
+  python -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()"
+}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -51,8 +56,14 @@ for ((i = 0; i < N; i++)); do
     "${BASE_CONFIG}" >"${tmpcfg}"
   echo "[$(date -Iseconds)] (${i}+1)/${N} name=${run_name} seed=${seed}"
   cd "${REPO_ROOT}"
+  if [[ "${MASTER_PORT}" == "auto" ]]; then
+    master_port=$(_pick_port)
+  else
+    master_port="${MASTER_PORT}"
+  fi
   # shellcheck disable=SC2086
   torchrun ${TORCHRUN_EXTRA} --nproc_per_node="${NPROC_PER_NODE}" \
+    --master_port="${master_port}" \
     "${PY_SCRIPT}" --config "${tmpcfg}" \
     --mask-mode "${MASK_MODE}" --mask-ratio "${MASK_RATIO}"
 done
