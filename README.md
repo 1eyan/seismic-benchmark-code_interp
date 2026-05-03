@@ -1,0 +1,77 @@
+# Benchmark Code — Exploration Geophysics Data Processing Benchmark Template
+
+A PyTorch benchmark template for seismic data processing, supporting interpolation, denoising, and supervised restoration on SEG-Y / NPY / MAT volumes.
+
+Features:
+- **Registry + factory pattern** for models, losses, metrics, and datasets — add new components via YAML without editing training scripts.
+- **Preprocessing** — spherical divergence correction, normalization (minmax / max_abs / mean_std, per shot / trace / global), trace masking, noise injection.
+- **Patchify / unpatchify** for 2D conv models with overlapping grids.
+- **Training** — single-GPU and DDP multi-GPU via `torchrun`.
+- **Inference** — full-shot reconstruction, per-shot metrics (MSE, RMSE, MAE, SNR, PSNR, SSIM), visualization, and optional `.npy` export.
+
+---
+
+## Directory Overview
+
+- **tools/** — Data utilities: I/O (`array_io.py`, `segy_read.py`), preprocessing (`preprocessing.py`), patching (`patching.py`).
+- **model/** — `nn.Module` definitions and `MODEL_REGISTRY`. UNet, Res-UNet, DnCNN, Attention U-Net are registered and selectable from YAML.
+- **utils/** — Training infrastructure: datasets, losses, metrics, visualization, logging, optimizer/scheduler builders, train/eval loops, DDP helpers, checkpoint I/O.
+- **configs/** — One YAML file per experiment; hyper-parameters are never hard-coded in source.
+- **scripts/** — CLI entry points for training (`train_*.py`) and inference (`inference_*.py`), plus bash launchers (`*.sh`).
+- **results/** — Experiment outputs (checkpoints, logs, CSVs, PNGs). Not tracked by Git.
+- **memory/** — Project memory: design decisions, update log, techniques, research references.
+- **.cursor/rules/** — Agent rule files (`*.mdc`).
+
+---
+
+## Quick Start
+
+### Training
+
+```bash
+# Interpolation (single volume + trace masking)
+python scripts/train_interpolation_unet.py --config configs/interpolation_unet.yaml
+
+# Paired supervised training (input + target volumes)
+python scripts/train_paired_unet.py --config configs/paired_unet.yaml
+
+# Denoising (paired noisy / clean volumes)
+python scripts/train_denoise_res_unet.py --config configs/denoise_res_unet.yaml
+
+# DDP multi-GPU
+CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 scripts/train_interpolation_unet.py --config configs/interpolation_unet.yaml
+```
+
+### Inference
+
+```bash
+python scripts/inference_interpolation.py \
+  --config configs/interpolation_unet.yaml \
+  --checkpoint results/<exp_name>/checkpoints/epoch_0049.pt
+```
+
+See `使用说明.md` (Chinese) for detailed usage, config schema, and FAQ.
+
+---
+
+## Rules (see `.cursor/rules/`)
+
+1. **memory-first** — Read `memory/` before any edit; append important changes to `memory/updates.md`.
+2. **no-duplication** — No duplicated logic; consolidate into `utils/` or `tools/`; check existing code before adding.
+3. **efficiency-first** — Avoid redundant loops, I/O, copies, and needless CPU↔GPU / dtype moves.
+4. **research-first** — Prefer mature open-source implementations over from-scratch code; cite sources in `memory/updates.md` or the relevant README.
+5. **clarify-before-execute** — Ask when uncertain; present a plan and a diff summary, and wait for confirmation before editing.
+6. **no-auto-run** — The agent never runs scripts or training commands; only tells the user how to run them.
+7. **english-only** — All project docs, comments, log strings, and commit messages are written in English. Agent↔user chat is not restricted.
+8. **concise-docs** — Docstrings stay at one-sentence functionality + `Parameters` + `Returns`; design rationale and "how to add" tutorials live in READMEs or `memory/research_first.md`. Memory entries are bullet-only.
+
+---
+
+## Contribution Guide (minimal)
+
+- **No duplicated code.** Before adding a feature, search `utils/` and `tools/` for an equivalent implementation.
+- **Reuse first.** Shared logic goes into `utils/` or `tools/`; entry points into `scripts/`; model definitions into `model/`; configs into `configs/`.
+- **Update memory.** Every design decision, dependency upgrade, critical bugfix, or open-source reference must be logged in `memory/updates.md`.
+- **Open source first.** When a mature open-source implementation exists (timm, HuggingFace, Meta official repos, etc.), use it as the baseline and cite the source.
+- **Do not auto-run.** The agent must not execute `python` / `pip` / `torchrun`; the user runs scripts manually.
+- **English only.** All project docs, comments, and commit messages must be written in English.
