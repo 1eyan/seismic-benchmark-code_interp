@@ -7,6 +7,9 @@ Features:
 - **Preprocessing** — spherical divergence correction, normalization (minmax / max_abs / mean_std, per shot / trace / global), trace masking, noise injection.
 - **Patchify / unpatchify** for 2D conv models with overlapping grids.
 - **Training** — single-GPU and DDP multi-GPU via `torchrun`.
+- **Shot-level splitting** — split train/val/test by unique FFID (sequential order) instead of random patch-level split, preventing data leakage.
+- **Best-validation checkpoint** — automatically retains `best.pt` (lowest val loss) independently of the periodic `epoch_*.pt` snapshots.
+- **Unified visualization** — consistent symmetric color scale across input, prediction, target, and residual panels.
 - **Inference** — full-shot reconstruction, per-shot metrics (MSE, RMSE, MAE, SNR, PSNR, SSIM), visualization, and optional `.npy` export.
 
 ---
@@ -30,23 +33,23 @@ Features:
 
 ```bash
 # Interpolation (single volume + trace masking)
-python scripts/train_interpolation_unet.py --config configs/interpolation_unet.yaml
+python scripts/interpolation/train_interpolation_unet.py --config configs/interpolation/interpolation_unet.yaml
 
 # Paired supervised training (input + target volumes)
-python scripts/train_paired_unet.py --config configs/paired_unet.yaml
+python scripts/interpolation/train_paired_unet.py --config configs/interpolation/paired_unet.yaml
 
 # Denoising (paired noisy / clean volumes)
-python scripts/train_denoise_res_unet.py --config configs/denoise_res_unet.yaml
+python scripts/coherent_noise_attenuation/train_denoise_res_unet.py --config configs/coherent_noise_attenuation/denoise_res_unet.yaml
 
 # DDP multi-GPU
-CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 scripts/train_interpolation_unet.py --config configs/interpolation_unet.yaml
+CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 scripts/interpolation/train_interpolation_unet.py --config configs/interpolation/interpolation_unet.yaml
 ```
 
 ### Inference
 
 ```bash
-python scripts/inference_interpolation.py \
-  --config configs/interpolation_unet.yaml \
+python scripts/interpolation/inference_interpolation.py \
+  --config configs/interpolation/interpolation_unet.yaml \
   --checkpoint results/<exp_name>/checkpoints/epoch_0049.pt
 ```
 
