@@ -41,6 +41,7 @@ from utils import (  # noqa: E402
     build_metrics,
     build_optimizer,
     build_scheduler,
+    build_shot_split_loaders,
     default_config_relpath_for_train_script,
     destroy_distributed,
     evaluate,
@@ -48,6 +49,7 @@ from utils import (  # noqa: E402
     load_config,
     maybe_wrap_ddp,
     sampler_set_epoch,
+    maybe_save_best_checkpoint,
     save_checkpoint,
     set_seed,
     setup_experiment_dir_distributed,
@@ -57,8 +59,8 @@ from utils import (  # noqa: E402
 )
 
 
-def _build_patch_pairs(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
-    """Prepare ``(input_patches, target_patches)`` from raw shots."""
+def _preprocess_shots(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Load volume, preprocess, and return ``(input_shots, target_shots, per_shot_ffid)``."""
     prep = cfg["preprocess"]
 
     data_cfg = None
@@ -103,17 +105,45 @@ def _build_patch_pairs(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
     else:
         masked = shots
 
+    # Extract per-shot FFID for shot-level splitting.
+    if data_cfg.get("path", "").lower().endswith((".sgy", ".segy")):
+        from tools.segy_read import read_regular_shots
+
+        _, headers = read_regular_shots(
+            data_cfg["path"],
+            traces_per_shot=int(data_cfg.get("traces_per_shot", 201)),
+            time_downsample=int(data_cfg.get("time_downsample", 1)),
+            return_headers=True,
+        )
+        per_shot_ffid = headers["FieldRecord"][:, 0]
+    else:
+        per_shot_ffid = np.arange(shots.shape[0])
+
+    return masked, shots, per_shot_ffid
+
+
+def _patchify_pairs(
+    input_shots: np.ndarray, target_shots: np.ndarray, cfg: Dict[str, Any]
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Patchify given shot subsets."""
+    prep = cfg["preprocess"]
     patch_t = int(prep.get("patch_time", 256))
     patch_x = int(prep.get("patch_trace", 128))
     overlap = float(prep.get("patch_overlap", 0.5))
 
     target_patches, _ = patchify_uniform(
-        shots, patch_size=(patch_x, patch_t), overlap=overlap, output_ndim=4
+        target_shots, patch_size=(patch_x, patch_t), overlap=overlap, output_ndim=4
     )
     input_patches, _ = patchify_uniform(
-        masked, patch_size=(patch_x, patch_t), overlap=overlap, output_ndim=4
+        input_shots, patch_size=(patch_x, patch_t), overlap=overlap, output_ndim=4
     )
     return input_patches.astype(np.float32), target_patches.astype(np.float32)
+
+
+def _build_patch_pairs(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
+    """Backward-compatible full pipeline."""
+    inp, tgt, _ = _preprocess_shots(cfg)
+    return _patchify_pairs(inp, tgt, cfg)
 
 
 def parse_args() -> argparse.Namespace:
@@ -163,13 +193,25 @@ def main() -> None:
     exp_dir = setup_experiment_dir_distributed(cfg, rank, distributed, base_dir=_REPO_ROOT)
     device = training_device(cfg, distributed=distributed, local_rank=local_rank)
 
-    train_loader, test_loader, train_sampler, eval_train_loader = build_loaders(
-        cfg,
-        build_patch_pairs_fn=_build_patch_pairs,
-        rank=rank,
-        world_size=world_size,
-        distributed=distributed,
-    )
+    if "shot_split" in cfg.get("data", {}):
+        train_loader, val_loader, train_sampler, eval_train_loader = build_shot_split_loaders(
+            cfg,
+            preprocess_fn=_preprocess_shots,
+            patchify_fn=_patchify_pairs,
+            rank=rank,
+            world_size=world_size,
+            distributed=distributed,
+            test_set_dir=exp_dir / "test_set",
+        )
+    else:
+        train_loader, val_loader, train_sampler, eval_train_loader = build_loaders(
+            cfg,
+            build_patch_pairs_fn=_build_patch_pairs,
+            rank=rank,
+            world_size=world_size,
+            distributed=distributed,
+        )
+
     model = build_model(cfg["model"]).to(device)
     model = maybe_wrap_ddp(
         model,
@@ -188,13 +230,13 @@ def main() -> None:
     if rank == 0:
         logger = TrainingLogger(
             log_dir=exp_dir / cfg["log"].get("log_dir", "logs"),
-            loss_keys=["train", "test"],
-            metric_keys=[f"train_{m}" for m in metric_names] + [f"test_{m}" for m in metric_names],
+            loss_keys=["train", "val"],
+            metric_keys=[f"train_{m}" for m in metric_names] + [f"val_{m}" for m in metric_names],
             plot_interval=int(cfg["log"].get("plot_interval", 5)),
         )
     if logger is not None:
         logger.info(
-            f"Model {model_type} | train/test patches: {len(train_loader.dataset)} / {len(test_loader.dataset)}"
+            f"Model {model_type} | train/val patches: {len(train_loader.dataset)} / {len(val_loader.dataset)}"
         )
 
     total_epochs = int(cfg["train"]["epochs"])
@@ -203,6 +245,7 @@ def main() -> None:
     vis_interval = int(cfg["train"].get("vis_interval", 5))
     log_step = bool(cfg["train"].get("log_step", False))
 
+    best_val_loss = float("inf")
     start_time = time.time()
     for epoch in range(total_epochs):
         sampler_set_epoch(train_sampler, epoch)
@@ -218,8 +261,8 @@ def main() -> None:
             log_interval=int(cfg["train"].get("log_interval", 20)),
             logger=logger if log_step else None,
         )
-        test_losses = {"val": float("nan")}
-        test_metrics: Dict[str, float] = {}
+        val_losses = {"val": float("nan")}
+        val_metrics: Dict[str, float] = {}
         train_metrics: Dict[str, float] = {n: float("nan") for n in metric_names}
 
         if rank == 0 and eval_train_loader is not None:
@@ -231,25 +274,36 @@ def main() -> None:
                 device=device,
             )
             if (epoch + 1) % eval_interval == 0:
-                test_losses, test_metrics = evaluate(
+                val_losses, val_metrics = evaluate(
                     model=model,
-                    loader=test_loader,
+                    loader=val_loader,
                     loss_fn=loss_fn,
                     metrics=metrics,
                     device=device,
+                )
+                best_val_loss = maybe_save_best_checkpoint(
+                    exp_dir / "checkpoints" / "best.pt",
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    epoch=epoch,
+                    val_loss=val_losses["val"],
+                    best_val_loss=best_val_loss,
+                    extras={"config": cfg},
+                    logger=logger,
                 )
 
         metric_row: Dict[str, float] = {}
         for name in metric_names:
             metric_row[f"train_{name}"] = train_metrics.get(name, float("nan"))
-            metric_row[f"test_{name}"] = test_metrics.get(name, float("nan"))
+            metric_row[f"val_{name}"] = val_metrics.get(name, float("nan"))
 
         if logger is not None:
             logger.log_epoch(
                 epoch=epoch,
                 losses={
                     "train": train_stats["train"],
-                    "test": test_losses.get("val", float("nan")),
+                    "val": val_losses.get("val", float("nan")),
                 },
                 metrics=metric_row,
                 extras={"lr": optimizer.param_groups[0]["lr"]},
@@ -268,7 +322,7 @@ def main() -> None:
         if rank == 0 and (epoch + 1) % vis_interval == 0:
             visualize_random_sample(
                 model=model,
-                loader=test_loader,
+                loader=val_loader,
                 save_path=exp_dir / "visualizations" / f"epoch_{epoch:04d}.png",
                 device=device,
                 title=f"Interpolation {model_type} epoch {epoch}",

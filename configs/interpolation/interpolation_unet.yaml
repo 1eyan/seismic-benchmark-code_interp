@@ -15,6 +15,13 @@ data:
   # mat:
   #   path: /data/shared/SEGC3/SEG_45Shot_shots1-9.mat
   #   key: shots   # optional variable name
+  # Shot-level split: uncomment to split by FFID instead of patch-level random split.
+  # When present, test_ratio is ignored. Splits are performed on unique FFID values
+  # in sequential order (first N FFIDs -> train, next M -> val, remaining -> test).
+  # shot_split:
+  #   train: 7
+  #   val: 1
+  #   test: 1
   test_ratio: 0.1
   loader:
     batch_size: 192

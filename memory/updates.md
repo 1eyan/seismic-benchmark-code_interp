@@ -449,3 +449,41 @@
 - Change: `train_denoise_unet.py`, `train_denoise_res_unet.py`, `train_interpolation_unet.py`, `train_paired_unet.py`, `inference_interpolation.py` replaced the leading `from utils import resolve_repo_root` block with an inline `pathlib`-only walk: from `Path(__file__).resolve().parents`, pick the first directory containing both `model/` and `utils/`, insert it into `sys.path`, then import. `_REPO_ROOT` is still defined for `setup_experiment_dir_distributed(base_dir=_REPO_ROOT)`.
 - Impact: Entry scripts launch correctly via `torchrun` (or plain `python <abs path>`) from any working directory and any subfolder depth without `PYTHONPATH` setup.
 - Follow-up: None.
+
+## 2026-05-06 - Unified vmin/vmax for all visualizations
+- Context: Residual panels in `plot_sample` used an independent per-panel adaptive color scale (`_symmetric_clip` per array). Because residuals are typically small, they were visually exaggerated and could not be directly compared against input / prediction / target amplitudes.
+- Change:
+  - `utils/visualization.py` `plot_sample`: added `vmin`, `vmax`, `share_scale` parameters. Default is `share_scale=True`. When enabled (and no explicit `vmin`/`vmax` provided), a single symmetric scale is computed from the maximum of `_symmetric_clip` over input, prediction, and target, and applied to all panels including the residual.
+  - `utils/visualization.py` `visualize_random_sample`: forwards `vmin`/`vmax`/`share_scale` to `plot_sample`.
+  - `utils/inference_utils.py` `save_shot_visualizations`: forwards `vmin`/`vmax`/`share_scale` to `plot_sample`.
+  - `scripts/interpolation/inference_interpolation.py`: computes a run-level symmetric scale (`vmax = np.quantile(np.abs(concatenated volume), 0.995)`) and passes explicit `vmin=-vmax, vmax=vmax` to `save_shot_visualizations`, so every shot figure in the same inference run uses exactly the same color scale.
+- Impact: All training and inference visualizations now share a consistent color scale by default. Residual amplitudes are directly comparable to input/prediction/target. Backward compatibility is preserved: callers can still request per-panel adaptive scaling by passing `share_scale=False`.
+- Follow-up: If other inference scripts are added later, replicate the run-level `vmax` computation pattern.
+
+## 2026-05-06 - Shot-level (FFID) train/val/test splitting
+- Context: The existing `build_loaders` performed a patch-level random split, which could place patches from the same shot gather into both train and test sets, causing data leakage. The user requested splitting by unique FFID (shot number) in sequential order before patchifying, with configurable counts per split.
+- Change:
+  - `utils/train_utils.py`: added `build_shot_split_loaders(cfg, preprocess_fn, patchify_fn, ...)` which:
+    1. Calls `preprocess_fn` to obtain `(input_shots, target_shots, per_shot_ffid)`.
+    2. Derives `unique_ffids = np.unique(per_shot_ffid)` and slices them sequentially into train/val/test subsets using `cfg["data"]["shot_split"]` counts.
+    3. Masks shot volumes by FFID membership, patchifies each subset independently, and builds `DataLoader`s with `DistributedSampler` when distributed.
+    4. Optionally saves the unpatchified test-set shots to `test_set_dir` for later inference.
+  - Extracted `_make_dataloader` helper in `utils/train_utils.py` to avoid duplication between `build_loaders` and `build_shot_split_loaders`.
+  - `utils/__init__.py`: exported `build_shot_split_loaders`.
+  - `scripts/interpolation/train_interpolation_unet.py`: split `_build_patch_pairs` into `_preprocess_shots` (load volume → spherical divergence → normalize → mask_traces → extract FFID from SEG-Y headers) and `_patchify_pairs`. `main()` branches on `"shot_split" in cfg.get("data", {})` to call `build_shot_split_loaders` or the legacy `build_loaders`. Logger keys changed from `test_` prefix to `val_` prefix.
+  - `scripts/interpolation/train_paired_unet.py`: same structural split and `shot_split` branch; `_preprocess_shots` supports paired input/target volumes (`segy_pair` / `npy_pair` / `mat_pair`).
+  - `scripts/coherent_noise_attenuation/train_denoise_unet.py` and `train_denoise_res_unet.py`: same split pattern; `evaluate()` retains `metrics_on_denoised_signal=True`.
+  - `configs/interpolation/interpolation_unet.yaml`: added commented `shot_split` example block.
+- Impact: When `data.shot_split` is present, train/val/test boundaries are strictly at the shot level (by FFID), eliminating leakage from overlapping patches. The sequential FFID ordering (1-7 train, 8 val, 9 test, etc.) is deterministic and reproducible. Existing configs without `shot_split` continue to use the patch-level random split for backward compatibility.
+- Follow-up: Save training-set FFID list into checkpoints so that resumed runs or downstream inference can verify split consistency.
+
+## 2026-05-06 - Save best-validation checkpoint
+- Context: Training scripts only saved checkpoints at fixed `ckpt_interval` epochs. The user wanted to retain the model parameters that achieved the lowest validation loss, regardless of the interval schedule.
+- Change:
+  - `utils/train_utils.py`: added `maybe_save_best_checkpoint(path, model, optimizer, scheduler, epoch, val_loss, best_val_loss, extras, logger)` which compares `val_loss` against `best_val_loss`, saves a checkpoint to `path` when improved, logs the event, and returns the updated best value.
+  - `utils/__init__.py`: exported `maybe_save_best_checkpoint`.
+  - All four training scripts (`train_interpolation_unet.py`, `train_paired_unet.py`, `train_denoise_unet.py`, `train_denoise_res_unet.py`):
+    - Initialize `best_val_loss = float("inf")` before the epoch loop.
+    - After each validation evaluation, call `maybe_save_best_checkpoint(..., path=exp_dir / "checkpoints" / "best.pt", ...)` so the best model is overwritten in-place when validation loss decreases.
+- Impact: A `best.pt` checkpoint is always available after training, containing the model state, optimizer, scheduler, and epoch that yielded the lowest validation loss. The periodic `epoch_*.pt` checkpoints are unaffected.
+- Follow-up: Allow YAML-configurable `best_metric` (e.g. maximize SNR instead of minimizing loss) if different tasks need different criteria.

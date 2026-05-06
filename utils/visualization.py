@@ -62,6 +62,9 @@ def plot_sample(
     save_path: Union[str, Path],
     title: Optional[str] = None,
     cmap: str = "gray",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    share_scale: bool = True,
 ) -> Any:
     """Side-by-side ``input | prediction | target | residual`` panel for one sample.
 
@@ -105,11 +108,21 @@ def plot_sample(
     if len(panels) == 1:
         axes = [axes]
 
+    if vmin is None and vmax is None and share_scale:
+        v = _symmetric_clip(inp_2d.T)
+        v = max(v, _symmetric_clip(pred_2d.T))
+        if target is not None:
+            v = max(v, _symmetric_clip(tgt_2d.T))
+        vmin, vmax = -v, v
+
     for ax, (name, arr) in zip(axes, panels):
         # Seismic display convention: horizontal=trace, vertical=time.
         arr_show = arr.T
-        v = _symmetric_clip(arr_show)
-        im = ax.imshow(arr_show, cmap=cmap, vmin=-v, vmax=v, aspect="auto")
+        if vmin is None or vmax is None:
+            v = _symmetric_clip(arr_show)
+            im = ax.imshow(arr_show, cmap=cmap, vmin=-v, vmax=v, aspect="auto")
+        else:
+            im = ax.imshow(arr_show, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto")
         ax.set_title(name)
         ax.set_xlabel("trace")
         ax.set_ylabel("time")
@@ -136,6 +149,9 @@ def visualize_random_sample(
     title: Optional[str] = None,
     seed: Optional[int] = None,
     cmap: str = "gray",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    share_scale: bool = True,
 ) -> Any:
     """Pick a random sample from ``loader.dataset``, run the model, save a 4-panel plot.
 
@@ -198,6 +214,9 @@ def visualize_random_sample(
         save_path=save_path,
         title=full_title,
         cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        share_scale=share_scale,
     )
 
 

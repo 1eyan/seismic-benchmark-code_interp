@@ -351,6 +351,12 @@ def main() -> None:
     viz_dir = out_dir / "visualizations"
     viz_dir.mkdir(parents=True, exist_ok=True)
     indices = select_random_shots(n_shots, n_viz_shots, seed=seed)
+
+    # Use a single symmetric color scale for all visualizations in this run.
+    vmax = float(np.quantile(np.abs(np.concatenate([
+        input_shots.ravel(), pred_shots.ravel(), target_shots.ravel()
+    ])), 0.995))
+
     save_shot_visualizations(
         input_shots=input_shots,
         pred_shots=pred_shots,
@@ -358,6 +364,8 @@ def main() -> None:
         indices=indices,
         save_dir=viz_dir,
         title_prefix=f"interp_{model_type}",
+        vmin=-vmax,
+        vmax=vmax,
     )
 
     # ------------------------------------------------------------------

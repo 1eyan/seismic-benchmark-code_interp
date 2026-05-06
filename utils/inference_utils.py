@@ -172,6 +172,9 @@ def save_shot_visualizations(
     save_dir: Path,
     title_prefix: str = "shot",
     cmap: str = "gray",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    share_scale: bool = True,
 ) -> List[Path]:
     """Save one 4-panel PNG per selected shot.
 
@@ -202,6 +205,9 @@ def save_shot_visualizations(
             save_path=path,
             title=f"{title_prefix} shot {idx}",
             cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            share_scale=share_scale,
         )
         paths.append(path)
     return paths

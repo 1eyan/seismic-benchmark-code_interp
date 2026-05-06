@@ -370,6 +370,29 @@ def find_latest_checkpoint(ckpt_dir: Union[str, Path]) -> Optional[Path]:
     return max(files, key=lambda p: p.stat().st_mtime)
 
 
+def maybe_save_best_checkpoint(
+    path: Union[str, Path],
+    model: nn.Module,
+    optimizer: Optimizer,
+    scheduler: Optional[_LRScheduler],
+    epoch: int,
+    val_loss: float,
+    best_val_loss: float,
+    extras: Optional[Dict[str, Any]] = None,
+    logger: Optional[Any] = None,
+) -> float:
+    """Save checkpoint when ``val_loss`` improves; returns updated best_val_loss."""
+    if val_loss < best_val_loss:
+        save_checkpoint(path, model, optimizer, scheduler, epoch, extras)
+        if logger is not None:
+            logger.info(
+                f"New best val_loss={val_loss:.6g} (prev={best_val_loss:.6g}) at epoch {epoch}; "
+                f"saved {Path(path).name}"
+            )
+        return val_loss
+    return best_val_loss
+
+
 # ----------------------------------------------------------------------
 # Training / evaluation loops
 # ----------------------------------------------------------------------
@@ -488,6 +511,39 @@ def evaluate(
     return losses, out_metrics
 
 
+def _make_dataloader(
+    x: torch.Tensor,
+    y: torch.Tensor,
+    cfg: Dict[str, Any],
+    shuffle: bool,
+    sampler: Optional[DistributedSampler] = None,
+) -> DataLoader:
+    """Build a DataLoader from tensors and config."""
+    loader_cfg = cfg["data"].get("loader", {})
+    batch_size = int(loader_cfg.get("batch_size", 8))
+    num_workers = int(loader_cfg.get("num_workers", 0))
+    pin_memory = bool(loader_cfg.get("pin_memory", True))
+    ds = TensorDataset(x, y)
+    if sampler is not None:
+        return DataLoader(
+            ds,
+            batch_size=batch_size,
+            sampler=sampler,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            drop_last=False,
+        )
+    return DataLoader(
+        ds,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        drop_last=False,
+    )
+
+
 def build_loaders(
     cfg: Dict[str, Any],
     *,
@@ -533,65 +589,118 @@ def build_loaders(
     x_test = torch.from_numpy(x[test_idx])
     y_test = torch.from_numpy(y[test_idx])
 
-    loader_cfg = cfg["data"].get("loader", {})
-    batch_size = int(loader_cfg.get("batch_size", 8))
-    num_workers = int(loader_cfg.get("num_workers", 0))
-    pin_memory = bool(loader_cfg.get("pin_memory", True))
-
-    train_ds = TensorDataset(x_train, y_train)
-    test_ds = TensorDataset(x_test, y_test)
     sampler_seed = int(cfg["experiment"]["seed"])
-
     train_sampler: Optional[DistributedSampler] = None
     if distributed:
         train_sampler = DistributedSampler(
-            train_ds,
+            TensorDataset(x_train, y_train),
             num_replicas=world_size,
             rank=rank,
             shuffle=True,
             seed=sampler_seed,
         )
-        train_loader = DataLoader(
-            train_ds,
-            batch_size=batch_size,
-            sampler=train_sampler,
-            shuffle=False,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            drop_last=False,
-        )
-    else:
-        train_loader = DataLoader(
-            train_ds,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            drop_last=False,
-        )
 
-    test_loader = DataLoader(
-        test_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        drop_last=False,
-    )
+    train_loader = _make_dataloader(x_train, y_train, cfg, shuffle=True, sampler=train_sampler)
+    test_loader = _make_dataloader(x_test, y_test, cfg, shuffle=False)
 
     if distributed and rank != 0:
         eval_train_loader: Optional[DataLoader] = None
     else:
-        eval_train_loader = DataLoader(
-            train_ds,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            drop_last=False,
-        )
+        eval_train_loader = _make_dataloader(x_train, y_train, cfg, shuffle=False)
 
     return train_loader, test_loader, train_sampler, eval_train_loader
+
+
+def build_shot_split_loaders(
+    cfg: Dict[str, Any],
+    *,
+    preprocess_fn: Callable[[Dict[str, Any]], Tuple[np.ndarray, np.ndarray, np.ndarray]],
+    patchify_fn: Callable[[np.ndarray, np.ndarray, Dict[str, Any]], Tuple[np.ndarray, np.ndarray]],
+    rank: int = 0,
+    world_size: int = 1,
+    distributed: bool = False,
+    test_set_dir: Optional[Union[str, Path]] = None,
+) -> Tuple[DataLoader, DataLoader, Optional[DistributedSampler], Optional[DataLoader]]:
+    """Build train / val loaders with shot-level (FFID) splitting.
+
+    Splits are performed on unique FFID values in sequential order:
+    the first ``train`` unique FFIDs go to training, the next ``val`` to
+    validation, and the remaining ``test`` to the test set.
+    All shot gathers belonging to the same FFID are kept together.
+
+    Parameters
+    ----------
+    cfg                  : experiment config dict.
+    preprocess_fn        : callable ``cfg -> (input_shots, target_shots, per_shot_ffid)``.
+    patchify_fn          : callable ``(input_shots, target_shots, cfg) -> (input_patches, target_patches)``.
+    rank, world_size, distributed : DDP controls.
+    test_set_dir         : if provided, unpatchified test shots are saved here
+                           as ``input_shots.npy``, ``target_shots.npy``, ``ffid.npy``.
+
+    Returns
+    -------
+    train_loader, val_loader, train_sampler, eval_train_loader
+        ``eval_train_loader`` is ``None`` on non-zero ranks under DDP.
+    """
+    input_shots, target_shots, per_shot_ffid = preprocess_fn(cfg)
+
+    shot_split = cfg["data"]["shot_split"]
+    n_train = int(shot_split["train"])
+    n_val = int(shot_split["val"])
+    n_test = int(shot_split["test"])
+
+    unique_ffids = np.unique(per_shot_ffid)
+    n_total_ffid = unique_ffids.size
+    if n_train + n_val + n_test > n_total_ffid:
+        raise ValueError(
+            f"shot_split asks for {n_train}+{n_val}+{n_test} shots "
+            f"but only {n_total_ffid} unique FFIDs available."
+        )
+
+    train_ffids = unique_ffids[:n_train]
+    val_ffids = unique_ffids[n_train : n_train + n_val]
+    test_ffids = unique_ffids[n_train + n_val : n_train + n_val + n_test]
+
+    train_mask = np.isin(per_shot_ffid, train_ffids)
+    val_mask = np.isin(per_shot_ffid, val_ffids)
+    test_mask = np.isin(per_shot_ffid, test_ffids)
+
+    train_x, train_y = patchify_fn(input_shots[train_mask], target_shots[train_mask], cfg)
+    val_x, val_y = patchify_fn(input_shots[val_mask], target_shots[val_mask], cfg)
+    test_x, test_y = patchify_fn(input_shots[test_mask], target_shots[test_mask], cfg)
+
+    if test_set_dir is not None:
+        out_dir = Path(test_set_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        np.save(out_dir / "input_shots.npy", input_shots[test_mask])
+        np.save(out_dir / "target_shots.npy", target_shots[test_mask])
+        np.save(out_dir / "ffid.npy", per_shot_ffid[test_mask])
+
+    x_train = torch.from_numpy(train_x)
+    y_train = torch.from_numpy(train_y)
+    x_val = torch.from_numpy(val_x)
+    y_val = torch.from_numpy(val_y)
+
+    sampler_seed = int(cfg["experiment"]["seed"])
+    train_sampler: Optional[DistributedSampler] = None
+    if distributed:
+        train_sampler = DistributedSampler(
+            TensorDataset(x_train, y_train),
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            seed=sampler_seed,
+        )
+
+    train_loader = _make_dataloader(x_train, y_train, cfg, shuffle=True, sampler=train_sampler)
+    val_loader = _make_dataloader(x_val, y_val, cfg, shuffle=False)
+
+    if distributed and rank != 0:
+        eval_train_loader: Optional[DataLoader] = None
+    else:
+        eval_train_loader = _make_dataloader(x_train, y_train, cfg, shuffle=False)
+
+    return train_loader, val_loader, train_sampler, eval_train_loader
 
 
 def count_parameters(model: nn.Module) -> str:
