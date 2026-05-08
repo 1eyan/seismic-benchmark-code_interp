@@ -487,3 +487,18 @@
     - After each validation evaluation, call `maybe_save_best_checkpoint(..., path=exp_dir / "checkpoints" / "best.pt", ...)` so the best model is overwritten in-place when validation loss decreases.
 - Impact: A `best.pt` checkpoint is always available after training, containing the model state, optimizer, scheduler, and epoch that yielded the lowest validation loss. The periodic `epoch_*.pt` checkpoints are unaffected.
 - Follow-up: Allow YAML-configurable `best_metric` (e.g. maximize SNR instead of minimizing loss) if different tasks need different criteria.
+
+## 2026-05-08 — Denoise shell scripts: noise-level × seed nested loop + per-model configs
+
+- Context: The user has multiple paired noisy/noise SEG-Y volumes at different noise intensity levels (`noisy_1.0.sgy` / `noise_1.0.sgy`, `noisy_3.0.sgy` / `noise_3.0.sgy`, etc.) under `/data/shared/benchmark/ground_roll/`. The existing `.sh` launchers only looped over seeds against a single hard-coded noise level. The DnCNN and AttenUNet launchers also had stale paths pointing to `denoise_res_unet` config/script. Additionally, `torchrun` default port 29500 caused `EADDRINUSE` when launching multiple scripts concurrently.
+
+- Change:
+  - **Shell script rework** — all four `train_denoise_{unet,res_unet,dncnn,atten_unet}.sh` now use a nested loop: outer loop over `NOISE_LEVELS` array, inner loop over `N_SEEDS` seeds. Experiment name becomes `<base>_level<level>_seed<seed>`, guaranteeing output dirs never collide. Each run increments `MASTER_PORT` (`--master_port=29500 + run_idx - 1`) to avoid port conflicts between consecutive and concurrent runs.
+  - **Shell script path fixes** — `train_denoise_dncnn.sh` and `train_denoise_atten_unet.sh` corrected from stale `denoise_res_unet.yaml` / `train_denoise_res_unet.py` to their own config and Python script.
+  - **Python script docstrings** — `train_denoise_dncnn.py` and `train_denoise_atten_unet.py` docstrings updated to reference their own script names and config paths.
+  - **New configs** — `configs/coherent_noise_attenuation/denoise_dncnn.yaml` (model: dncnn, batch_size: 8, depth: 17, base_channels: 64) and `configs/coherent_noise_attenuation/denoise_atten_unet.yaml` (model: atten_unet, batch_size: 196, depth: 4, base_channels: 32). Both follow the same paired segy_pair schema as the existing UNet configs.
+  - **Config cleanup** — removed `dt`/`t0` from preprocess blocks in all four denoise configs (spherical-divergence is already excluded from the denoise pipeline); added `MASTER_PORT` and `NOISE_LEVELS` comments in the shell scripts.
+
+- Impact: Each script can now run a full grid of `len(NOISE_LEVELS) × N_SEEDS` experiments in one command. Output directories follow the pattern `<output_dir>/<name>_level<level>_seed<seed>/`, fully isolated per combination. Port conflicts are eliminated. Users can edit the four-line config block at the top of each `.sh` to select noise levels, seed count, starting seed, GPUs, and base port — no command-line arguments needed.
+
+- Follow-up: If additional noise levels are added to the data directory, simply append them to the `NOISE_LEVELS` array. For running multiple scripts in parallel, assign each script a different `MASTER_PORT` base (e.g. 29500, 29520, 29540, 29560) to prevent port-range overlap.

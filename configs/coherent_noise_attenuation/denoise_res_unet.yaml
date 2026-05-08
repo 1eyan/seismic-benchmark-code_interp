@@ -6,14 +6,14 @@
 
 experiment:
   name: denoise_res_unet_base0502
-  output_dir: /cloud/cloud-s3fs/ground_roll
+  output_dir: /data/shared/benchmark/ground_roll/results
   seed: 42
   device: cuda:4
 
 data:
   segy_pair:
-    input_path: /cloud/cloud-ssd1/ground_roll/noisy/SEGC3_shots1_9_noisy.sgy
-    target_path: /cloud/cloud-ssd1/ground_roll/noise/SEGC3_shots1_9_noise.sgy  # noise label (supervised target)
+    input_path: /data/shared/benchmark/ground_roll/noisy/SEGC3_shots1_9_noisy_1.0.sgy
+    target_path: /data/shared/benchmark/ground_roll/noise/SEGC3_shots1_9_noise_1.0.sgy  # noise label (supervised target)
     traces_per_shot: 201
     time_downsample: 1
 
@@ -24,8 +24,6 @@ data:
     pin_memory: true
 
 preprocess:
-  dt: 0.002
-  t0: 0.0
   # Spherical-divergence compensation is not applied in the denoise training script (raw amplitudes).
   normalize_mode: max_abs
   normalize_scope: global   # max_abs (and optional clip) is fit on noisy input only; same stats scale the noise label

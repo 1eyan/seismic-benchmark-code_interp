@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# 循环多次运行 scripts/coherent_noise_attenuation/train_denoise_unet.py（torchrun + DDP）；
-# 每次只改 seed，experiment.name 变为 ``<yaml 中的 name>_seed<seed>``，输出目录互不覆盖。
-#
-# 直接在下面「配置区」改数值即可，无需命令行传参。
+# Nested loop: for each noise-intensity level, run multiple seeds.
+# Output dirs don't collide: experiment name is ``<yaml name>_level<level>_seed<seed>``.
+# Configure NOISE_LEVELS / N_SEEDS / START_SEED below.
 
 set -euo pipefail
 
-# ---------- 配置区（按需修改）----------
-CUDA_VISIBLE_DEVICES="0,1" # 物理 GPU，逗号分隔
-NPROC_PER_NODE=2           # 须与可见 GPU 个数一致
-N=5                        # 循环次数
-START_SEED=42              # 第 1 次 seed，之后为 START_SEED+1, ...
-TORCHRUN_EXTRA=""          # 可选：追加给 torchrun，例如 "--standalone"
+# ---------- Configuration ----------
+CUDA_VISIBLE_DEVICES="0,1,2,3" # physical GPUs, comma-separated
+NPROC_PER_NODE=4         # must match the number of visible GPUs
+NOISE_LEVELS=(1.0 3.0 5.0 7.0 9.0)  # noise intensities to run
+N_SEEDS=3                  # number of seeds per noise level
+START_SEED=42              # first seed; subsequent seeds are START_SEED+1, START_SEED+2, ...
+MASTER_PORT=29500          # base port for torchrun; incremented per run to avoid EADDRINUSE
+TORCHRUN_EXTRA=""          # optional: extra flags for torchrun, e.g. "--standalone"
 # ------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,17 +41,27 @@ tmpcfg="$(mktemp)"
 cleanup() { rm -f "${tmpcfg}"; }
 trap cleanup EXIT
 
-for ((i = 0; i < N; i++)); do
-  seed=$((START_SEED + i))
-  run_name="${NAME_BASE}_seed${seed}"
-  sed -E \
-    -e 's/^([[:space:]]*seed:[[:space:]]*)[0-9]+$/\1'"${seed}"'/' \
-    -e 's/^([[:space:]]*name:[[:space:]]*).*/\1'"${run_name}"'/' \
-    "${BASE_CONFIG}" >"${tmpcfg}"
-  echo "[$(date -Iseconds)] (${i}+1)/${N} name=${run_name} seed=${seed}"
-  cd "${REPO_ROOT}"
-  # shellcheck disable=SC2086
-  torchrun ${TORCHRUN_EXTRA} --nproc_per_node="${NPROC_PER_NODE}" "${PY_SCRIPT}" --config "${tmpcfg}"
+n_levels=${#NOISE_LEVELS[@]}
+n_total=$((n_levels * N_SEEDS))
+run_idx=0
+
+for level in "${NOISE_LEVELS[@]}"; do
+  for ((s = 0; s < N_SEEDS; s++)); do
+    seed=$((START_SEED + s))
+    run_idx=$((run_idx + 1))
+    run_name="${NAME_BASE}_level${level}_seed${seed}"
+    sed -E \
+      -e '/input_path:/s/(noisy_)[0-9.]+(\.sgy)/\1'"${level}"'\2/' \
+      -e '/target_path:/s/(noise_)[0-9.]+(\.sgy)/\1'"${level}"'\2/' \
+      -e 's/^([[:space:]]*seed:[[:space:]]*)[0-9]+$/\1'"${seed}"'/' \
+      -e 's/^([[:space:]]*name:[[:space:]]*).*/\1'"${run_name}"'/' \
+      "${BASE_CONFIG}" >"${tmpcfg}"
+    port=$((MASTER_PORT + run_idx - 1))
+    echo "[$(date -Iseconds)] (${run_idx}/${n_total}) level=${level} seed=${seed} name=${run_name} port=${port}"
+    cd "${REPO_ROOT}"
+    # shellcheck disable=SC2086
+    torchrun ${TORCHRUN_EXTRA} --nproc_per_node="${NPROC_PER_NODE}" --master_port="${port}" "${PY_SCRIPT}" --config "${tmpcfg}"
+  done
 done
 
-echo "[$(date -Iseconds)] Done ${N} runs (seed ${START_SEED}..$((START_SEED + N - 1)))."
+echo "[$(date -Iseconds)] Done ${n_total} runs (${n_levels} level(s) x ${N_SEEDS} seed(s))."
