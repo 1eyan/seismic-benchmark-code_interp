@@ -17,7 +17,12 @@ data:
     traces_per_shot: 201
     time_downsample: 1
 
-  test_ratio: 0.1
+  # Shot-level FFID split: first 7 → train, next 1 → val, last 1 → test (no leakage).
+  shot_split:
+    train: 7
+    val: 1
+    test: 1
+
   loader:
     batch_size: 196
     num_workers: 4
