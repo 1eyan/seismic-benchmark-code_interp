@@ -137,6 +137,8 @@ def evaluate_one(
     # --- load model ---------------------------------------------------------
     try:
         model = load_model_from_checkpoint(ckpt_path, device)
+        total_params = sum(p.numel() for p in model.parameters())
+        num_params_m = total_params / 1e6
     except Exception:
         print(f"[ERROR] failed to load model from {ckpt_path}:")
         traceback.print_exc()
@@ -189,6 +191,7 @@ def evaluate_one(
     return {
         "before": before_mean,
         "after": after_mean,
+        "num_params_m": num_params_m,
     }
 
 
@@ -204,6 +207,7 @@ def aggregate(
         lambda: defaultdict(list)
     )
     raw_by_level: Dict[str, Dict[str, float]] = {}
+    params_by_model: Dict[str, float] = {}
 
     for entry in entries:
         level = entry["level"]
@@ -215,6 +219,10 @@ def aggregate(
         before = entry.get("before", {})
         if before and level not in raw_by_level:
             raw_by_level[level] = before
+        # param count — same for all seeds of a model, take first
+        n_params = entry.get("num_params_m")
+        if n_params is not None and model not in params_by_model:
+            params_by_model[model] = n_params
 
     # compute mean±std
     aggregated: Dict[str, Dict[str, Any]] = {}
@@ -240,7 +248,7 @@ def aggregate(
                 model_stats[m] = (mean, std)
             aggregated[level][model] = model_stats
 
-    return aggregated
+    return aggregated, params_by_model
 
 
 def _fmt(mean: float, std: float, metric: str) -> str:
@@ -256,6 +264,7 @@ def _fmt(mean: float, std: float, metric: str) -> str:
 
 def build_excel(
     aggregated: Dict[str, Dict[str, Any]],
+    params_by_model: Dict[str, float],
     output_path: Path,
 ) -> None:
     """Write one sheet per noise level. Rows = methods, columns = metrics."""
@@ -283,16 +292,24 @@ def build_excel(
         bottom=Side(style="thin"),
     )
 
+    n_metric_cols = len(METRIC_DISPLAY)
+
     for level in sorted(aggregated.keys(), key=float):
         ws = wb.create_sheet(title=f"Noise {level}")
 
-        # column A = Method, B..G = metrics
+        # column A = Method, B = Parameters (M), C..H = metrics
         ws.cell(row=1, column=1, value="Method").font = header_font
         ws.cell(row=1, column=1).fill = header_fill
         ws.cell(row=1, column=1).alignment = center_align
         ws.cell(row=1, column=1).border = thin_border
 
-        for ci, m_disp in enumerate(METRIC_DISPLAY, start=2):
+        cell = ws.cell(row=1, column=2, value="Parameters (M)")
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_align
+        cell.border = thin_border
+
+        for ci, m_disp in enumerate(METRIC_DISPLAY, start=3):
             cell = ws.cell(row=1, column=ci, value=m_disp)
             cell.font = header_font
             cell.fill = header_fill
@@ -311,8 +328,18 @@ def build_excel(
             cell.alignment = Alignment(horizontal="left", vertical="center")
             cell.border = thin_border
 
+            # param count
+            if key == "raw":
+                cell = ws.cell(row=ri, column=2, value="—")
+            else:
+                n_m = params_by_model.get(key)
+                cell = ws.cell(row=ri, column=2,
+                               value=round(n_m, 2) if n_m is not None else "—")
+            cell.alignment = center_align
+            cell.border = thin_border
+
             data = level_data[key]
-            for ci, m_name in enumerate(METRIC_NAMES, start=2):
+            for ci, m_name in enumerate(METRIC_NAMES, start=3):
                 if m_name not in data:
                     cell = ws.cell(row=ri, column=ci, value="—")
                 elif key == "raw":
@@ -326,7 +353,7 @@ def build_excel(
 
         # auto-width
         from openpyxl.utils import get_column_letter
-        for ci in range(1, len(METRIC_DISPLAY) + 2):
+        for ci in range(1, n_metric_cols + 3):
             max_w = 0
             for row in ws.iter_rows(min_col=ci, max_col=ci):
                 for c in row:
@@ -334,7 +361,7 @@ def build_excel(
                         max_w = max(max_w, len(str(c.value)))
             ws.column_dimensions[get_column_letter(ci)].width = max_w + 4
 
-        ws.freeze_panes = "B2"
+        ws.freeze_panes = "C2"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
@@ -401,25 +428,31 @@ def main() -> None:
         else:
             entry["before"] = result["before"]
             entry["after"] = result["after"]
+            entry["num_params_m"] = result["num_params_m"]
             b = result["before"]
             a = result["after"]
             print(
-                f"  SNR:  {b['snr']:>7.2f} -> {a['snr']:>7.2f} dB  |  "
+                f"  Params: {result['num_params_m']:.2f}M  |  "
+                f"SNR:  {b['snr']:>7.2f} -> {a['snr']:>7.2f} dB  |  "
                 f"PSNR: {b['psnr']:>7.2f} -> {a['psnr']:>7.2f} dB  |  "
                 f"SSIM: {b['ssim']:.4f} -> {a['ssim']:.4f}  |  "
                 f"MSE:  {b['mse']:.6f} -> {a['mse']:.6f}"
             )
 
     # --- aggregate per level -------------------------------------------------
-    aggregated = aggregate(entries)
+    aggregated, params_by_model = aggregate(entries)
 
     # summary of what was aggregated
+    print("Model parameter counts:")
+    for m in MODEL_ROW_ORDER:
+        if m in params_by_model:
+            print(f"  {MODEL_DISPLAY.get(m, m):<16s}  {params_by_model[m]:.2f}M")
     for level in sorted(aggregated.keys(), key=float):
         models = [k for k in aggregated[level] if k != "raw"]
         print(f"Noise {level}: raw + {len(models)} model(s) — {', '.join(MODEL_DISPLAY.get(m, m) for m in models)}")
 
     # --- export -------------------------------------------------------------
-    build_excel(aggregated, args.output)
+    build_excel(aggregated, params_by_model, args.output)
 
 
 if __name__ == "__main__":

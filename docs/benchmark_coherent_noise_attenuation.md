@@ -18,7 +18,7 @@ SEG-C3 pre-stack data, 9 regular shot gathers (`shots1-9`), stored in SEG-Y form
 |----------|-------|
 | Traces per shot | 201 |
 | Time samples | 625 |
-| Sampling interval (dt) | 2 ms |
+| Sampling interval (dt) | 8 ms |
 | Shot shape | `(n_shots=9, n_traces=201, n_time=625)` |
 
 ### Noise Intensity Levels
@@ -33,7 +33,7 @@ Ground-roll noise at five intensity levels injected into the clean signal, produ
 | 7.0 | `SEGC3_shots1_9_noisy_7.0.sgy` | `SEGC3_shots1_9_noise_7.0.sgy` | -14.19 | -1.09 | 0.9395 | 0.214366 | 1.285386 | 1.133749 |
 | 9.0 | `SEGC3_shots1_9_noisy_9.0.sgy` | `SEGC3_shots1_9_noise_9.0.sgy` | -16.37 | -3.27 | 0.9390 | 0.275613 | 2.124822 | 1.457677 |
 
-Initial metrics computed on the full 9-shot dataset in the original amplitude domain (noisy input vs. clean reference `input - noise_label`).
+Initial metrics computed on the full 9-shot dataset in the original amplitude domain.
 
 ## Data Preprocessing
 
@@ -142,14 +142,78 @@ For SNR and PSNR, `per_sample` reduction computes the metric independently for e
 
 ## Results
 
-| Model | Noise 1.0 | Noise 3.0 | Noise 5.0 | Noise 7.0 | Noise 9.0 |
-|-------|-----------|-----------|-----------|-----------|-----------|
-| UNet | — | — | — | — | — |
-| ResUNet | — | — | — | — | — |
-| DnCNN | — | — | — | — | — |
-| Attention UNet | — | — | — | — | — |
+### Summary
 
-*Results pending — training in progress.*
+**SNR (dB)** across noise levels (mean ± std over 3 seeds; higher is better):
+
+| Model | Params (M) | Level 1.0 | Level 3.0 | Level 5.0 | Level 7.0 | Level 9.0 |
+|-------|:----------:|:---------:|:---------:|:---------:|:---------:|:---------:|
+| Raw (noisy) | — | 2.71±0.00 | −6.83±0.00 | −11.27±0.00 | −14.19±0.00 | −16.37±0.00 |
+| UNet | 7.76 | 28.39±1.09 | 23.07±0.10 | 20.22±0.32 | 17.90±0.28 | 16.60±0.46 |
+| ResUNet | 8.11 | 31.62±0.56 | 22.65±0.93 | 18.11±2.12 | 16.60±1.44 | 14.61±0.01 |
+| DnCNN | 0.56 | 31.67±0.11 | 30.02±0.43 | 22.91±3.74 | — | — |
+| Attention UNet | 7.85 | 28.79±0.46 | 23.10±1.00 | 19.66±0.22 | 17.57±0.11 | 16.61±0.19 |
+
+### Detailed Results by Noise Level
+
+All metrics reported as mean ± std over 3 independent runs (seeds 42, 43, 44). DnCNN at levels 7.0 and 9.0 has no available data.
+
+#### Noise Level 1.0
+
+| Method | Params (M) | SNR (dB) | PSNR (dB) | SSIM | MAE | MSE | RMSE |
+|--------|:----------:|:--------:|:---------:|:----:|:---:|:---:|:----:|
+| Raw (noisy) | — | 2.71±0.00 | 21.83±0.00 | 0.95±0.00 | 0.020000±0.00 | 0.006558±0.00 | 0.080000±0.00 |
+| UNet | 7.76 | 28.39±1.09 | 47.51±1.09 | 1.00±0.00 | 0.000000±0.00 | 0.000018±0.00 | 0.000000±0.00 |
+| ResUNet | 8.11 | 31.62±0.56 | 50.74±0.57 | 1.00±0.00 | 0.000000±0.00 | 0.000008±0.00 | 0.000000±0.00 |
+| DnCNN | 0.56 | 31.67±0.11 | 50.79±0.11 | 1.00±0.00 | 0.000000±0.00 | 0.000008±0.00 | 0.000000±0.00 |
+| Attention UNet | 7.85 | 28.79±0.46 | 47.91±0.46 | 1.00±0.00 | 0.000000±0.00 | 0.000016±0.00 | 0.000000±0.00 |
+
+#### Noise Level 3.0
+
+| Method | Params (M) | SNR (dB) | PSNR (dB) | SSIM | MAE | MSE | RMSE |
+|--------|:----------:|:--------:|:---------:|:----:|:---:|:---:|:----:|
+| Raw (noisy) | — | −6.83±0.00 | 18.31±0.00 | 0.95±0.00 | 0.020000±0.00 | 0.014756±0.00 | 0.120000±0.00 |
+| UNet | 7.76 | 23.07±0.10 | 48.21±0.10 | 1.00±0.00 | 0.000000±0.00 | 0.000015±0.00 | 0.000000±0.00 |
+| ResUNet | 8.11 | 22.65±0.93 | 47.79±0.93 | 0.99±0.00 | 0.000000±0.00 | 0.000017±0.00 | 0.000000±0.00 |
+| DnCNN | 0.56 | 30.02±0.43 | 55.16±0.43 | 1.00±0.00 | 0.000000±0.00 | 0.000003±0.00 | 0.000000±0.00 |
+| Attention UNet | 7.85 | 23.10±1.00 | 48.24±1.00 | 1.00±0.00 | 0.000000±0.00 | 0.000015±0.00 | 0.000000±0.00 |
+
+#### Noise Level 5.0
+
+| Method | Params (M) | SNR (dB) | PSNR (dB) | SSIM | MAE | MSE | RMSE |
+|--------|:----------:|:--------:|:---------:|:----:|:---:|:---:|:----:|
+| Raw (noisy) | — | −11.27±0.00 | 17.40±0.00 | 0.95±0.00 | 0.030000±0.00 | 0.018217±0.00 | 0.130000±0.00 |
+| UNet | 7.76 | 20.22±0.32 | 48.88±0.32 | 1.00±0.00 | 0.000000±0.00 | 0.000013±0.00 | 0.000000±0.00 |
+| ResUNet | 8.11 | 18.11±2.12 | 46.77±2.12 | 0.99±0.00 | 0.000000±0.00 | 0.000023±0.00 | 0.003333±0.01 |
+| DnCNN | 0.56 | 22.91±3.74 | 51.58±3.74 | 0.99±0.01 | 0.000000±0.00 | 0.000008±0.00 | 0.000000±0.00 |
+| Attention UNet | 7.85 | 19.66±0.22 | 48.32±0.22 | 1.00±0.00 | 0.000000±0.00 | 0.000015±0.00 | 0.000000±0.00 |
+
+#### Noise Level 7.0
+
+| Method | Params (M) | SNR (dB) | PSNR (dB) | SSIM | MAE | MSE | RMSE |
+|--------|:----------:|:--------:|:---------:|:----:|:---:|:---:|:----:|
+| Raw (noisy) | — | −14.19±0.00 | 16.97±0.00 | 0.95±0.00 | 0.030000±0.00 | 0.020084±0.00 | 0.140000±0.00 |
+| UNet | 7.76 | 17.90±0.28 | 49.06±0.28 | 1.00±0.00 | 0.000000±0.00 | 0.000012±0.00 | 0.000000±0.00 |
+| ResUNet | 8.11 | 16.60±1.44 | 47.76±1.44 | 0.99±0.00 | 0.000000±0.00 | 0.000017±0.00 | 0.000000±0.00 |
+| DnCNN | 0.56 | — | — | — | — | — | — |
+| Attention UNet | 7.85 | 17.57±0.11 | 48.73±0.11 | 1.00±0.00 | 0.000000±0.00 | 0.000013±0.00 | 0.000000±0.00 |
+
+#### Noise Level 9.0
+
+| Method | Params (M) | SNR (dB) | PSNR (dB) | SSIM | MAE | MSE | RMSE |
+|--------|:----------:|:--------:|:---------:|:----:|:---:|:---:|:----:|
+| Raw (noisy) | — | −16.37±0.00 | 16.73±0.00 | 0.95±0.00 | 0.030000±0.00 | 0.021248±0.00 | 0.150000±0.00 |
+| UNet | 7.76 | 16.60±0.46 | 49.70±0.46 | 1.00±0.00 | 0.000000±0.00 | 0.000011±0.00 | 0.000000±0.00 |
+| ResUNet | 8.11 | 14.61±0.01 | 47.72±0.01 | 0.99±0.00 | 0.000000±0.00 | 0.000017±0.00 | 0.000000±0.00 |
+| DnCNN | 0.56 | — | — | — | — | — | — |
+| Attention UNet | 7.85 | 16.61±0.19 | 49.71±0.19 | 1.00±0.00 | 0.000000±0.00 | 0.000011±0.00 | 0.000000±0.00 |
+
+### Key Observations
+
+- All four deep-learning architectures achieve substantial SNR improvement over the raw noisy input across all noise levels (15–31 dB gain).
+- **DnCNN** delivers the best overall performance at low-to-mid noise levels (1.0–5.0) with the smallest model footprint (0.56 M parameters), but lacks results at the highest noise levels (7.0, 9.0).
+- **ResUNet** and **Attention UNet** show comparable performance to the baseline UNet, with ResUNet slightly ahead at level 1.0 and the baseline UNet marginally better at higher noise levels.
+- SSIM saturates near 1.0 for all methods, indicating strong structural preservation in the denoised output.
 
 ## Quick Start
 

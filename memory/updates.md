@@ -503,6 +503,16 @@
 
 - Follow-up: If additional noise levels are added to the data directory, simply append them to the `NOISE_LEVELS` array. For running multiple scripts in parallel, assign each script a different `MASTER_PORT` base (e.g. 29500, 29520, 29540, 29560) to prevent port-range overlap.
 
+## 2026-05-10 — HF model upload, benchmark results, model card
+
+- Context: After training, the best.pt checkpoints need to be uploaded to Hugging Face for sharing. The benchmark documentation required actual evaluation results instead of placeholders. A corresponding Hugging Face model card was needed.
+- Change:
+  - `tools/upload_to_hf.py` (new): scans experiment directories (`denoise_{model}_base*_level*_seed*`), uploads `checkpoints/best.pt` + `config.yaml` per experiment to a single HF repo under `models/{arch}/level{level}_seed{seed}/`. Generates and uploads a comprehensive model card (README.md) describing task, dataset, architectures, training details, usage, and results.
+  - `docs/benchmark_coherent_noise_attenuation.md`: replaced placeholder results table with full evaluation data across five noise levels (1.0–9.0) for all four architectures, including SNR summary and per-level breakdowns (PSNR, SSIM, MAE, MSE, RMSE) with mean±std over 3 seeds. Added Key Observations section.
+  - `scripts/coherent_noise_attenuation/batch_evaluate.py`: added `num_params_m` to evaluation output for parameter count tracking.
+- Impact: Benchmark results are now documented. Trained models can be uploaded to Hugging Face via a single CLI command. The HF repo includes a complete model card with task description, usage examples, and evaluation metrics.
+- Follow-up: Add a standalone `inference_denoise.py` for per-shot visualization of individual checkpoints.
+
 ## 2026-05-10 — Benchmark doc updates + batch evaluation script
 
 - Context: The coherent noise attenuation benchmark page had a generic "supervised deep learning" description that didn't name the architectures or explain the data source. There was also no automated way to evaluate all trained models on the held-out test sets and aggregate results across seeds.
