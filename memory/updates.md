@@ -502,3 +502,15 @@
 - Impact: Each script can now run a full grid of `len(NOISE_LEVELS) × N_SEEDS` experiments in one command. Output directories follow the pattern `<output_dir>/<name>_level<level>_seed<seed>/`, fully isolated per combination. Port conflicts are eliminated. Users can edit the four-line config block at the top of each `.sh` to select noise levels, seed count, starting seed, GPUs, and base port — no command-line arguments needed.
 
 - Follow-up: If additional noise levels are added to the data directory, simply append them to the `NOISE_LEVELS` array. For running multiple scripts in parallel, assign each script a different `MASTER_PORT` base (e.g. 29500, 29520, 29540, 29560) to prevent port-range overlap.
+
+## 2026-05-10 — Benchmark doc updates + batch evaluation script
+
+- Context: The coherent noise attenuation benchmark page had a generic "supervised deep learning" description that didn't name the architectures or explain the data source. There was also no automated way to evaluate all trained models on the held-out test sets and aggregate results across seeds.
+
+- Change:
+  - `docs/benchmark_coherent_noise_attenuation.md`: task overview now lists all four architectures (UNet, ResUNet, DnCNN, Attention UNet) and clarifies that the 9-shot SEG-C3 dataset is synthetic — generated via forward modeling on the official SEG C3 velocity model, with reflection signals from the acoustic wave equation and ground-roll noise from the elastic wave equation. Fixed geometry table: `n_time` corrected from 1501 to 625.
+  - `scripts/coherent_noise_attenuation/batch_evaluate.py` (new): end-to-end batch evaluation script. Discovers experiment directories by name pattern (`denoise_{model}_base{date}_level{level}_seed{seed}`), loads `checkpoints/best.pt` and `test_set/`, runs `inference_on_shots`, flattens data to 2D before metric computation, computes SNR/PSNR/SSIM/MAE/MSE/RMSE both before and after denoising, aggregates mean±std across seeds per (level, model), and outputs one Excel sheet per noise level. Rows = Raw/DnCNN/UNet/ResUNet/Attention UNet, columns = metrics, cells = `mean±std`. MAE/MSE/RMSE means at 6 decimal places, all other values at 2 decimal places; raw row shows `value±0.00`.
+
+- Impact: Benchmark task description is now specific and technically accurate. Batch evaluation is a single command: `python scripts/coherent_noise_attenuation/batch_evaluate.py --root_dir <results_dir> --output <output.xlsx>`.
+
+- Follow-up: Add a standalone inference script (`inference_denoise.py`) if per-shot visualization or original-amplitude-domain metrics are needed for individual checkpoints.
