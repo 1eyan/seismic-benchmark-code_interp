@@ -2,7 +2,7 @@
 
 ## Task Overview
 
-Suppress coherent ground-roll noise from pre-stack seismic shot gathers via supervised deep learning. Given a noisy shot gather, the model predicts the additive noise component; the denoised signal is obtained by subtracting the prediction from the input. This is a **paired regression** task trained with a noise-label target (the ground truth noise volume).
+Suppress coherent ground-roll noise from pre-stack seismic shot gathers using four deep-learning architectures: **UNet**, **ResUNet**, **DnCNN**, and **Attention UNet**. The 9-shot SEG-C3 dataset is synthetic, generated via forward modeling on the official SEG C3 velocity model — reflection signals are modeled with the acoustic wave equation, while ground-roll noise is modeled with the elastic wave equation to capture its dispersive, low-velocity character. Given a noisy shot gather, the model predicts the additive noise component; the denoised signal is obtained by subtracting the prediction from the input. This is a **paired regression** task trained with a noise-label objective (the ground-truth noise component).
 
 Supervision signal: `denoised = noisy_input - predicted_noise`, evaluated against `clean_reference = noisy_input - label_noise`.
 
@@ -10,20 +10,20 @@ Supervision signal: `denoised = noisy_input - predicted_noise`, evaluated agains
 
 ### Source
 
-SEG-C3 pre-stack field data, 9 regular shot gathers (`shots1-9`), stored in SEG-Y format.
+SEG-C3 pre-stack data, 9 regular shot gathers (`shots1-9`), stored in SEG-Y format.
 
 ### Geometry
 
 | Property | Value |
 |----------|-------|
 | Traces per shot | 201 |
-| Time samples | 625 (after anti-alias downsampling ×1) |
+| Time samples | 625 |
 | Sampling interval (dt) | 2 ms |
-| Shot shape | `(n_shots=9, n_traces=201, n_time=1501)` |
+| Shot shape | `(n_shots=9, n_traces=201, n_time=625)` |
 
 ### Noise Intensity Levels
 
-Ground-roll noise at five intensity levels injected into the clean signal, producing paired `(noisy, noise_label)` volumes:
+Ground-roll noise at five intensity levels injected into the clean signal, producing paired `(noisy, noise_label)` shot gathers:
 
 | Noise level | Noisy file | Noise-label file | SNR (dB) | PSNR (dB) | SSIM | MAE | MSE | RMSE |
 |-------------|-----------|-----------------|----------|-----------|------|-----|-----|------|
@@ -33,14 +33,14 @@ Ground-roll noise at five intensity levels injected into the clean signal, produ
 | 7.0 | `SEGC3_shots1_9_noisy_7.0.sgy` | `SEGC3_shots1_9_noise_7.0.sgy` | -14.19 | -1.09 | 0.9395 | 0.214366 | 1.285386 | 1.133749 |
 | 9.0 | `SEGC3_shots1_9_noisy_9.0.sgy` | `SEGC3_shots1_9_noise_9.0.sgy` | -16.37 | -3.27 | 0.9390 | 0.275613 | 2.124822 | 1.457677 |
 
-Initial metrics computed on the full 9-shot volume in the original amplitude domain (noisy input vs. clean reference `input - noise_label`).
+Initial metrics computed on the full 9-shot dataset in the original amplitude domain (noisy input vs. clean reference `input - noise_label`).
 
 ## Data Preprocessing
 
 ### Normalization
 
-- **Mode**: `max_abs` — each volume scaled to `[-1, 1]` by dividing by `max(|x|)`.
-- **Scope**: `global` — statistics are computed once over the full noisy volume; the same scalars are applied to the noise-label target so both stay in a consistent amplitude range.
+- **Mode**: `max_abs` — each dataset scaled to `[-1, 1]` by dividing by `max(|x|)`.
+- **Scope**: `global` — statistics are computed once over the full noisy dataset; the same scalars are applied to the noise-label target so both stay in a consistent amplitude range.
 - **Clipping**: None (optional percentile clipping available but not active).
 
 ### Patchify
