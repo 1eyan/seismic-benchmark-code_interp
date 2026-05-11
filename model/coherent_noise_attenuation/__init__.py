@@ -8,8 +8,13 @@ Importing this sub-package executes every concrete model file so their
 from ..registry import MODEL_REGISTRY, build_model, register_model
 
 from . import atten_unet  # noqa: F401
+from . import ddpm  # noqa: F401
 from . import dncnn  # noqa: F401
+from . import enhanced_unet  # noqa: F401
+from . import physics_unet  # noqa: F401
+from . import pix2pix  # noqa: F401
 from . import res_unet  # noqa: F401
+from . import sanet  # noqa: F401
 from . import unet  # noqa: F401
 
 __all__ = [

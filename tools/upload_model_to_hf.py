@@ -2,7 +2,7 @@
 Upload trained model checkpoints (best.pt + config.yaml) to a Hugging Face repository.
 
 Usage:
-    export HF_USERNAME="your_username"
+    export HF_NAMESPACE="your-org-name"   # or HF_USERNAME (personal account)
     export HF_TOKEN="your_hf_token"
     python tools/upload_to_hf.py
 
@@ -247,7 +247,9 @@ def main():
     )
     args = parser.parse_args()
 
-    username = os.environ.get("HF_USERNAME")
+    # namespace = os.environ.get("HF_NAMESPACE") or os.environ.get("HF_USERNAME")
+    namespace = os.environ.get("HF_NAMESPACE")
+
     token = os.environ.get("HF_TOKEN")
 
     entries = scan_results(args.results_dir)
@@ -255,7 +257,7 @@ def main():
         logger.warning("No matching result folders found in %s", args.results_dir)
         sys.exit(0)
 
-    repo_id = f"{username}/{args.repo_name}" if username else args.repo_name
+    repo_id = f"{namespace}/{args.repo_name}" if namespace else args.repo_name
     total = len(entries)
     found_pt = sum(1 for e in entries if e["best_pt"])
     found_yaml = sum(1 for e in entries if e["config_yaml"])
@@ -283,10 +285,19 @@ def main():
     logger.info("Creating / ensuring repo: %s", repo_id)
     create_repo(repo_id, token=token, exist_ok=True, private=False)
 
+    # Fetch existing files in the repo for incremental (skip-already-existing) upload
+    try:
+        existing = set(api.list_repo_files(repo_id, token=token))
+        logger.info("Repo has %d existing file(s); will skip those.", len(existing))
+    except Exception:
+        logger.info("Could not list repo files (repo may be empty); uploading all.")
+        existing = set()
+
     uploaded = 0
+    skipped = 0
     failed = 0
 
-    # Upload model card first
+    # Upload model card (always overwrite — it is regenerated each run)
     if not args.no_model_card:
         card = generate_model_card(entries, repo_id)
         try:
@@ -312,6 +323,10 @@ def main():
 
         for fname, local_path in files_to_upload.items():
             remote = hf_path(e, fname)
+            if remote in existing:
+                logger.info("  [SKIP]   %s (already exists)", remote)
+                skipped += 1
+                continue
             try:
                 upload_file(
                     path_or_fileobj=local_path,
@@ -325,7 +340,7 @@ def main():
                 logger.error("  [FAIL]   %s — %s", remote, exc)
                 failed += 1
 
-    logger.info("Done. Uploaded %d file(s), %d error(s).", uploaded, failed)
+    logger.info("Done. %d uploaded, %d skipped, %d error(s).", uploaded, skipped, failed)
 
 
 if __name__ == "__main__":

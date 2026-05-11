@@ -5,7 +5,7 @@
 # Supported formats: segy_pair, npy_pair, mat_pair (pick one block).
 
 experiment:
-  name: denoise_dncnn_base0508
+  name: denoise_dncnn_base0510
   output_dir: /data/shared/benchmark/ground_roll/results
   seed: 42
   device: cuda:4
@@ -71,8 +71,8 @@ metrics:
 optim:
   type: adamw
   params:
-    lr: 1.0e-3
-    weight_decay: 1.0e-4
+    lr: 1.0e-4
+    weight_decay: 1.0e-6
 
 scheduler:
   type: cosine

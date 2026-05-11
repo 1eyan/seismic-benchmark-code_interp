@@ -55,8 +55,13 @@ MODEL_DISPLAY = {
     "res_unet": "ResUNet",
     "dncnn": "DnCNN",
     "atten_unet": "Attention UNet",
+    "enhanced_atten_unet": "Enhanced Atten-UNet",
+    "sanet": "SANet",
+    "physics_unet": "Physics CNN",
+    "pix2pix": "Pix2Pix cGAN",
+    "ddpm": "DDPM cDDPM",
 }
-MODEL_ROW_ORDER = ["unet", "res_unet", "dncnn", "atten_unet"]
+MODEL_ROW_ORDER = ["unet", "res_unet", "dncnn", "atten_unet", "enhanced_atten_unet", "sanet", "physics_unet", "pix2pix", "ddpm"]
 
 # directory-name pattern: denoise_{model}_base{date}_level{level}_seed{seed}
 _DIR_RE = re.compile(
