@@ -23,7 +23,7 @@ data:
     test: 1
 
   loader:
-    batch_size: 2        # DDPM is memory-heavy
+    batch_size: 32        # DDPM is memory-heavy
     num_workers: 4
     pin_memory: true
 

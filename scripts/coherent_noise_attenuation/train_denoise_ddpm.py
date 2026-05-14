@@ -150,9 +150,9 @@ def _evaluate_ddpm(
     scheduler: DDPMNoiseScheduler,
     metrics: Dict[str, Any],
     device: torch.device,
-    sample_steps: int = 50,
+    sample_steps: int = 10,
 ) -> Tuple[Dict[str, float], Dict[str, float]]:
-    """Evaluate DDPM on a dataloader (few-step sampling for speed)."""
+    """Evaluate DDPM on a dataloader (few-step sampling for monitoring)."""
     model.eval()
     metric_sums: Dict[str, float] = {}
     mse_sum = 0.0
@@ -321,7 +321,7 @@ def main() -> None:
     ckpt_interval = int(cfg["train"].get("ckpt_interval", 20))
     vis_interval = int(cfg["train"].get("vis_interval", 5))
     grad_clip = cfg["train"].get("grad_clip")
-    eval_sample_steps = int(cfg["train"].get("eval_sample_steps", 50))
+    eval_sample_steps = int(cfg["train"].get("eval_sample_steps", 10))
 
     best_val_loss = float("inf")
     T = ddpm_scheduler.num_timesteps
@@ -374,14 +374,15 @@ def main() -> None:
         if lr_scheduler is not None:
             lr_scheduler.step()
 
-        # --- evaluation (all ranks must participate for DDP) -----------------
+        # --- evaluation (rank 0 only — DDPM sampling is too slow for all ranks) -
         val_losses: Dict[str, float] = {"val": float("nan")}
         val_metrics: Dict[str, float] = {}
         train_metrics: Dict[str, float] = {n: float("nan") for n in metric_names}
 
-        if eval_train_loader is not None:
+        if rank == 0 and eval_train_loader is not None:
+            eval_model = unwrap_ddp(model)
             _, train_metrics = _evaluate_ddpm(
-                model=model,
+                model=eval_model,
                 loader=eval_train_loader,
                 scheduler=ddpm_scheduler,
                 metrics=metrics,
@@ -390,14 +391,14 @@ def main() -> None:
             )
             if (epoch + 1) % eval_interval == 0:
                 val_losses, val_metrics = _evaluate_ddpm(
-                    model=model,
+                    model=eval_model,
                     loader=val_loader,
                     scheduler=ddpm_scheduler,
                     metrics=metrics,
                     device=device,
                     sample_steps=eval_sample_steps,
                 )
-                if rank == 0 and val_losses["val"] < best_val_loss:
+                if val_losses["val"] < best_val_loss:
                     best_val_loss = val_losses["val"]
                     _save_ddpm_checkpoint(
                         exp_dir / "checkpoints" / "best.pt",
@@ -410,6 +411,10 @@ def main() -> None:
                     )
                     if logger is not None:
                         logger.info(f"Best checkpoint saved (val_mse={best_val_loss:.6f})")
+
+        # Barrier: ensure rank 0 eval is done before all ranks enter next epoch
+        if distributed:
+            torch.distributed.barrier()
 
         # --- logging --------------------------------------------------------
         metric_row: Dict[str, float] = {}

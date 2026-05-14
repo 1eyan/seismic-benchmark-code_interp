@@ -125,8 +125,12 @@ def _patchify_triplets(
 # ---------------------------------------------------------------------------
 
 def _to_fk(x: torch.Tensor) -> torch.Tensor:
-    """2D FFT → stack real + imag as 2-channel tensor."""
-    f = torch.fft.fft2(x, dim=(-2, -1))
+    """2D orthonormal FFT → stack real + imag as 2-channel tensor.
+
+    ``norm="ortho"`` makes the transform norm-preserving so gradients
+    through ``fft2`` have O(1) magnitude regardless of patch size.
+    """
+    f = torch.fft.fft2(x, dim=(-2, -1), norm="ortho")
     return torch.cat([f.real, f.imag], dim=1)  # (B, 2, H, W)
 
 
@@ -140,6 +144,13 @@ def pretrain_classifier(
     """Pre-train f-k classifier on clean-signal vs ground-roll patches."""
     if rank != 0:
         return
+
+    # When running single-GPU (not under torchrun), the config's
+    # experiment.device may reference a physical GPU index that doesn't
+    # match CUDA_VISIBLE_DEVICES set by the launcher.  Use the first
+    # visible CUDA device instead.
+    if not distributed and torch.cuda.is_available():
+        device = torch.device("cuda:0")
 
     print("=== Phase 1: Pre-training f-k Classifier ===")
     noisy_p, clean_p, gr_p = _build_triplet_patches(cfg)
@@ -320,6 +331,12 @@ def main() -> None:
     eval_interval = int(cfg["train"].get("eval_interval", 1))
     ckpt_interval = int(cfg["train"].get("ckpt_interval", 20))
     grad_clip = cfg["train"].get("grad_clip")
+    detect_anomaly = bool(cfg["train"].get("detect_anomaly", False))
+    if detect_anomaly:
+        torch.autograd.set_detect_anomaly(True)
+        if rank == 0:
+            print("  [DEBUG] torch.autograd anomaly detection enabled")
+
     best_val_loss = float("inf")
     start_time = time.time()
 
@@ -338,6 +355,12 @@ def main() -> None:
 
             x_pred, y_pred, y_rec = model(z)
 
+            # Guard: skip batch if any model output is non-finite
+            if not torch.isfinite(x_pred).all() or not torch.isfinite(y_pred).all():
+                if rank == 0:
+                    print(f"  [WARNING] Non-finite model output at epoch {epoch}, skipping batch")
+                continue
+
             # data fidelity
             l_signal = F.mse_loss(x_pred, x_true)
             l_gr = F.mse_loss(y_pred, y_true)
@@ -348,11 +371,26 @@ def main() -> None:
             fk_y = _to_fk(y_pred)
             fk_yrec = _to_fk(y_rec)
 
-            l_sig_cls = bce(fk_clf(fk_x).squeeze(-1), torch.ones(z.shape[0], device=device))
-            l_noise_cls = bce(fk_clf(fk_y).squeeze(-1), torch.zeros(z.shape[0], device=device))
-            l_rec_cls = bce(fk_clf(fk_yrec).squeeze(-1), torch.zeros(z.shape[0], device=device))
+            l_sig_cls = bce(
+                torch.clamp(fk_clf(fk_x).squeeze(-1), -10, 10),
+                torch.ones(z.shape[0], device=device),
+            )
+            l_noise_cls = bce(
+                torch.clamp(fk_clf(fk_y).squeeze(-1), -10, 10),
+                torch.zeros(z.shape[0], device=device),
+            )
+            l_rec_cls = bce(
+                torch.clamp(fk_clf(fk_yrec).squeeze(-1), -10, 10),
+                torch.zeros(z.shape[0], device=device),
+            )
 
             loss = l_signal + l_gr + w1 * l_sig_cls + w2 * l_noise_cls + w3 * l_rec + w4 * l_rec_cls
+
+            # Guard: skip batch if loss is non-finite
+            if not torch.isfinite(loss):
+                if rank == 0:
+                    print(f"  [WARNING] Non-finite loss at epoch {epoch}, skipping batch")
+                continue
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
