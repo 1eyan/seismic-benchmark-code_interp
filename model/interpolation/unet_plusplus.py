@@ -79,8 +79,6 @@ class UNetPlusPlus(nn.Module):
                 self.upconvs[up_name] = nn.ConvTranspose2d(lower_ch, chans[i], kernel_size=2, stride=2)
                 # concat: upconv output (chans[i]) + j previous same-res features (j * chans[i])
                 self.decoders[dec_name] = _DoubleConv((j + 1) * chans[i], chans[i])
-                # next lower node for this resolution uses chans[i] as its lower_ch
-                lower_ch = chans[i]
 
         self.head = nn.Conv2d(chans[0], out_channels, kernel_size=1)
 
