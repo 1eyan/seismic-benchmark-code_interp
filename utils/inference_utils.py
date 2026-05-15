@@ -134,7 +134,13 @@ def compute_shot_metrics(
             raise ValueError(f"Unsupported metric for per-shot computation: {name!r}")
         per_shot[name_lower] = arr
         val = float(np.nanmean(arr))
-        if name_lower != "mse":
+        if name_lower == "mse":
+            pass  # keep full precision
+        elif name_lower in ("mae", "rmse"):
+            val = round(val, 6)
+        elif name_lower in ("snr", "psnr", "ssim"):
+            val = round(val, 4)
+        else:
             val = round(val, 2)
         mean[name_lower] = val
 

@@ -264,6 +264,8 @@ def _fmt(mean: float, std: float, metric: str) -> str:
     """
     if metric in ("mae", "mse", "rmse"):
         return f"{mean:.6f}±{std:.2f}"
+    if metric in ("snr", "psnr", "ssim"):
+        return f"{mean:.4f}±{std:.4f}"
     return f"{mean:.2f}±{std:.2f}"
 
 
@@ -385,7 +387,7 @@ def main() -> None:
         help="Directory containing experiment subdirectories",
     )
     parser.add_argument(
-        "--output", default="/data/shared/benchmark/ground_roll/results/batch_evaluation.xlsx", type=Path,
+        "--output", default="scripts/coherent_noise_attenuation/batch_evaluation_part.xlsx", type=Path,
         help="Path for the output Excel file (.xlsx)",
     )
     parser.add_argument(
@@ -438,8 +440,8 @@ def main() -> None:
             a = result["after"]
             print(
                 f"  Params: {result['num_params_m']:.2f}M  |  "
-                f"SNR:  {b['snr']:>7.2f} -> {a['snr']:>7.2f} dB  |  "
-                f"PSNR: {b['psnr']:>7.2f} -> {a['psnr']:>7.2f} dB  |  "
+                f"SNR:  {b['snr']:>7.4f} -> {a['snr']:>7.4f} dB  |  "
+                f"PSNR: {b['psnr']:>7.4f} -> {a['psnr']:>7.4f} dB  |  "
                 f"SSIM: {b['ssim']:.4f} -> {a['ssim']:.4f}  |  "
                 f"MSE:  {b['mse']:.6f} -> {a['mse']:.6f}"
             )
