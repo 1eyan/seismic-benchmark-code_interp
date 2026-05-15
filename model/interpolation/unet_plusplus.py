@@ -33,17 +33,6 @@ class _DoubleConv(nn.Module):
         return self.block(x)
 
 
-class _UpConv(nn.Module):
-    """Upsample by 2x and halve channels."""
-
-    def __init__(self, in_ch: int, out_ch: int) -> None:
-        super().__init__()
-        self.up = nn.ConvTranspose2d(in_ch, out_ch, kernel_size=2, stride=2)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.up(x)
-
-
 @register_model("unet_plusplus")
 class UNetPlusPlus(nn.Module):
     """UNet++ with nested dense skip connections.
@@ -87,7 +76,7 @@ class UNetPlusPlus(nn.Module):
             for j in range(1, depth - i + 1):  # layer index
                 up_name = f"up_{i}_{j}"
                 dec_name = f"dec_{i}_{j}"
-                self.upconvs[up_name] = _UpConv(lower_ch, chans[i])
+                self.upconvs[up_name] = nn.ConvTranspose2d(lower_ch, chans[i], kernel_size=2, stride=2)
                 # concat: upconv output (chans[i]) + j previous same-res features (j * chans[i])
                 self.decoders[dec_name] = _DoubleConv((j + 1) * chans[i], chans[i])
                 # next lower node for this resolution uses chans[i] as its lower_ch
@@ -124,7 +113,7 @@ class UNetPlusPlus(nn.Module):
                 # align spatial size (safeguard)
                 target_size = dense[i][0].shape[-2:]
                 if h_up.shape[-2:] != target_size:
-                    h_up = nn.functional.interpolate(
+                    h_up = torch.nn.functional.interpolate(
                         h_up, size=target_size, mode="bilinear", align_corners=False
                     )
                 # concatenate all same-resolution features
