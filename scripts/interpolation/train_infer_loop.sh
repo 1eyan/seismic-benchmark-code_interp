@@ -1,139 +1,344 @@
 #!/usr/bin/env bash
-# Train + Inference pipeline: loops over mask modes, mask ratios, and seeds.
-# For each combination: trains the model, then runs inference on the best checkpoint.
+# Train + inference loop for seismic trace interpolation.
 #
-# The training script appends ``_{mask_mode}_miss{ratio_pct}`` to the experiment
-# name, so results land in separate directories per configuration.
+# This script supports both:
+#   1) ratio-based missing traces:
+#        random:0.3
+#        uniform:0.5
+#        continuous:0.3
+#
+#   2) fixed contiguous missing traces:
+#        continuous:20tr
+#        continuous:30tr
+#        continuous:40tr
+#
+# Recommended examples:
+#   EXPERIMENTS=("random:0.3" "uniform:0.5" "continuous:30tr")
+#
+# Naming convention:
+#   ratio-based experiments:
+#       <base>_seed42_random_miss30
+#       <base>_seed42_uniform_miss50
+#       <base>_seed42_continuous_miss30
+#
+#   fixed-trace continuous experiments:
+#       <base>_seed42_continuous_miss20tr
+#       <base>_seed42_continuous_miss30tr
+#
+# Requirements:
+#   train_interpolation_unet.py should support:
+#       --mask-mode
+#       --mask-ratio
+#       --continuous-missing-traces
+#
+#   inference_interpolation.py should support:
+#       --mask-mode
+#       --mask-ratio
+#       --continuous-missing-traces
 
 set -euo pipefail
 
-# ---------- Configuration (edit here) ----------
-CUDA_VISIBLE_DEVICES="1"
-NPROC_PER_NODE=1
+# ==============================================================================
+# User configuration
+# ==============================================================================
 
-# Multi-mask loops
-MASK_MODES=( "random" "continuous" “uniform”)
-MASK_RATIOS=("0.3" "0.5" "0.7")
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
+MASTER_PORT="${MASTER_PORT:-auto}"
+TORCHRUN_EXTRA="${TORCHRUN_EXTRA:-}"
 
-# Seed loop
+BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/interpolation_unet.yaml}"
+TRAIN_PY="${TRAIN_PY:-scripts/interpolation/train_interpolation_unet.py}"
+INFER_PY="${INFER_PY:-scripts/interpolation/inference_interpolation.py}"
+
+# Unified experiment list.
+# Format:
+#   "<mask_mode>:<ratio>"      e.g., "random:0.3", "uniform:0.5", "continuous:0.3"
+#   "<mask_mode>:<N>tr"        e.g., "continuous:20tr"
+#
+# Fixed trace count is only meaningful for continuous missing traces.
+EXPERIMENTS=(
+  "random:0.3"
+  "uniform:0.5"
+  "continuous:0.3"
+  "continuous:20tr"
+  "continuous:30tr"
+  "continuous:40tr"
+)
+
 N_SEEDS=3
 START_SEED=42
 
-# Paths
-BASE_CONFIG="configs/interpolation/interpolation_unet.yaml"
-TRAIN_PY="scripts/interpolation/train_interpolation_unet.py"
-INFER_PY="scripts/interpolation/inference_interpolation.py"
+INFER_DEVICE="${INFER_DEVICE:-cuda:0}"
+RUN_INFERENCE=true
+RUN_EXTRA_INFERENCE=true
 
-# Inference settings
-INFER_DEVICE="cuda:1"
+# Extra inference for generalization tests.
+# For ratio-based experiments, extra ratio = ratio + EXTRA_RATIO_STEP.
+# For fixed-trace experiments, extra missing traces = missing_traces + EXTRA_TRACES_STEP.
+EXTRA_RATIO_STEP="0.1"
+EXTRA_TRACES_STEP=10
 
-# MASTER_PORT: set to a fixed port, or "auto" to pick a free port each run
-MASTER_PORT="auto"
-TORCHRUN_EXTRA=""
-# ----------------------------------------------
+# If true, use best.pt when available; otherwise use latest epoch_*.pt.
+PREFER_BEST_CHECKPOINT=true
 
-_pick_port() {
+# If true, only print commands.
+DRY_RUN=false
+
+# ==============================================================================
+# Helper functions
+# ==============================================================================
+
+log() {
+  echo "[$(date -Iseconds)] $*"
+}
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+run_cmd() {
+  echo "+ $*"
+  if [[ "${DRY_RUN}" != "true" ]]; then
+    "$@"
+  fi
+}
+
+pick_port() {
   python -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()"
 }
+
+ratio_to_pct() {
+  awk -v r="$1" 'BEGIN { printf "%d", r * 100 + 0.5 }'
+}
+
+ratio_add() {
+  awk -v a="$1" -v b="$2" 'BEGIN { printf "%.3f", a + b }'
+}
+
+get_experiment_name() {
+  local config_path="$1"
+  grep -m1 -E '^[[:space:]]*name:[[:space:]]*' "${config_path}" \
+    | sed -E 's/^[[:space:]]*name:[[:space:]]*//' \
+    | sed -E 's/[[:space:]]+#.*$//;s/[[:space:]]*$//'
+}
+
+parse_experiment() {
+  local spec="$1"
+
+  if [[ "${spec}" != *:* ]]; then
+    die "Invalid experiment spec: ${spec}. Expected format '<mask_mode>:<ratio>' or 'continuous:<N>tr'."
+  fi
+
+  EXP_MASK_MODE="${spec%%:*}"
+  EXP_VALUE="${spec#*:}"
+
+  case "${EXP_MASK_MODE}" in
+    uniform|random|continuous)
+      ;;
+    *)
+      die "Invalid mask mode: ${EXP_MASK_MODE}. Expected uniform, random, or continuous."
+      ;;
+  esac
+
+  if [[ "${EXP_VALUE}" =~ ^[0-9]+tr$ ]]; then
+    EXP_KIND="fixed_traces"
+    EXP_MISSING_TRACES="${EXP_VALUE%tr}"
+    EXP_MASK_RATIO=""
+
+    if [[ "${EXP_MASK_MODE}" != "continuous" ]]; then
+      die "Fixed trace count is only supported for continuous masking, got: ${spec}"
+    fi
+
+    if [[ "${EXP_MISSING_TRACES}" -le 0 ]]; then
+      die "Missing trace count must be positive, got: ${EXP_MISSING_TRACES}"
+    fi
+  else
+    EXP_KIND="ratio"
+    EXP_MASK_RATIO="${EXP_VALUE}"
+    EXP_MISSING_TRACES=""
+
+    awk -v r="${EXP_MASK_RATIO}" 'BEGIN { exit !(r > 0 && r < 1) }' \
+      || die "Mask ratio must be in (0, 1), got: ${EXP_MASK_RATIO}"
+  fi
+}
+
+run_suffix() {
+  if [[ "${EXP_KIND}" == "fixed_traces" ]]; then
+    echo "${EXP_MASK_MODE}_miss${EXP_MISSING_TRACES}tr"
+  else
+    local pct
+    pct="$(ratio_to_pct "${EXP_MASK_RATIO}")"
+    echo "${EXP_MASK_MODE}_miss${pct}"
+  fi
+}
+
+train_args() {
+  if [[ "${EXP_KIND}" == "fixed_traces" ]]; then
+    echo "--mask-mode ${EXP_MASK_MODE} --continuous-missing-traces ${EXP_MISSING_TRACES}"
+  else
+    echo "--mask-mode ${EXP_MASK_MODE} --mask-ratio ${EXP_MASK_RATIO}"
+  fi
+}
+
+infer_args() {
+  local kind="$1"
+  local mode="$2"
+  local value="$3"
+
+  if [[ "${kind}" == "fixed_traces" ]]; then
+    echo "--mask-mode ${mode} --continuous-missing-traces ${value}"
+  else
+    echo "--mask-mode ${mode} --mask-ratio ${value}"
+  fi
+}
+
+find_checkpoint() {
+  local ckpt_dir="$1"
+  local ckpt=""
+
+  if [[ "${PREFER_BEST_CHECKPOINT}" == "true" && -f "${ckpt_dir}/best.pt" ]]; then
+    echo "${ckpt_dir}/best.pt"
+    return 0
+  fi
+
+  ckpt="$(ls -t "${ckpt_dir}"/epoch_*.pt 2>/dev/null | head -1 || true)"
+  if [[ -n "${ckpt}" ]]; then
+    echo "${ckpt}"
+    return 0
+  fi
+
+  return 1
+}
+
+# ==============================================================================
+# Initialization
+# ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 export CUDA_VISIBLE_DEVICES
 
-for f in "${BASE_CONFIG}" "${TRAIN_PY}" "${INFER_PY}"; do
-  full="${REPO_ROOT}/${f}"
-  if [[ ! -f "${full}" ]]; then
-    echo "File not found: ${full}" >&2
-    exit 1
-  fi
-done
+[[ -f "${REPO_ROOT}/${BASE_CONFIG}" ]] || die "Config not found: ${REPO_ROOT}/${BASE_CONFIG}"
+[[ -f "${REPO_ROOT}/${TRAIN_PY}" ]] || die "Training script not found: ${REPO_ROOT}/${TRAIN_PY}"
+[[ -f "${REPO_ROOT}/${INFER_PY}" ]] || die "Inference script not found: ${REPO_ROOT}/${INFER_PY}"
 
-NAME_BASE="$(grep -m1 -E '^[[:space:]]*name:[[:space:]]*' "${REPO_ROOT}/${BASE_CONFIG}" | sed -E 's/^[[:space:]]*name:[[:space:]]*//' | sed -E 's/[[:space:]]+#.*$//;s/[[:space:]]*$//')"
-if [[ -z "${NAME_BASE}" ]]; then
-  echo "Could not parse experiment.name from ${BASE_CONFIG}" >&2
-  exit 1
-fi
+NAME_BASE="$(get_experiment_name "${REPO_ROOT}/${BASE_CONFIG}")"
+[[ -n "${NAME_BASE}" ]] || die "Could not parse experiment.name from ${BASE_CONFIG}"
 
-tmpcfg="$(mktemp)"
-cleanup() { rm -f "${tmpcfg}"; }
-trap cleanup EXIT
-
-TOTAL_RUNS=$(( ${#MASK_MODES[@]} * ${#MASK_RATIOS[@]} * N_SEEDS ))
+TOTAL_RUNS=$(( ${#EXPERIMENTS[@]} * N_SEEDS ))
 run_idx=0
 
-for mask_mode in "${MASK_MODES[@]}"; do
-  for mask_ratio in "${MASK_RATIOS[@]}"; do
-    ratio_pct=$(echo "${mask_ratio}" | awk '{printf "%d", $1*100}')
+log "Repository root: ${REPO_ROOT}"
+log "Base config: ${BASE_CONFIG}"
+log "Experiment base name: ${NAME_BASE}"
+log "Total runs: ${TOTAL_RUNS}"
+log "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 
-    for ((i = 0; i < N_SEEDS; i++)); do
-      seed=$((START_SEED + i))
-      run_idx=$((run_idx + 1))
+# ==============================================================================
+# Main loop
+# ==============================================================================
 
-      # sed only sets base+seed; Python appends _<mode>_miss<ratio>
-      run_name_sed="${NAME_BASE}_seed${seed}"
-      run_name_full="${NAME_BASE}_seed${seed}_${mask_mode}_miss${ratio_pct}"
+for spec in "${EXPERIMENTS[@]}"; do
+  parse_experiment "${spec}"
 
-      echo "============================================"
-      echo "[$(date -Iseconds)] [${run_idx}/${TOTAL_RUNS}] mode=${mask_mode} ratio=${mask_ratio} seed=${seed}"
-      echo "  Experiment: ${run_name_full}"
-      echo "============================================"
+  for ((i = 0; i < N_SEEDS; i++)); do
+    seed=$((START_SEED + i))
+    run_idx=$((run_idx + 1))
 
-      # --- Prepare temp config ---
-      sed -E \
-        -e 's/^([[:space:]]*seed:[[:space:]]*)[0-9]+$/\1'"${seed}"'/' \
-        -e 's/^([[:space:]]*name:[[:space:]]*).*/\1'"${run_name_sed}"'/' \
-        "${REPO_ROOT}/${BASE_CONFIG}" >"${tmpcfg}"
+    suffix="$(run_suffix)"
+    run_name_sed="${NAME_BASE}_seed${seed}"
+    run_name_full="${run_name_sed}_${suffix}"
 
-      # --- Train ---
-      echo "[$(date -Iseconds)] Training..."
-      cd "${REPO_ROOT}"
-      if [[ "${MASTER_PORT}" == "auto" ]]; then
-        master_port=$(_pick_port)
+    log "================================================================"
+    log "[${run_idx}/${TOTAL_RUNS}] spec=${spec}, seed=${seed}"
+    log "Experiment: ${run_name_full}"
+    log "================================================================"
+
+    tmpcfg="$(mktemp)"
+    sed -E \
+      -e 's/^([[:space:]]*seed:[[:space:]]*)[0-9]+$/\1'"${seed}"'/' \
+      -e 's/^([[:space:]]*name:[[:space:]]*).*/\1'"${run_name_sed}"'/' \
+      "${REPO_ROOT}/${BASE_CONFIG}" > "${tmpcfg}"
+
+    cd "${REPO_ROOT}"
+
+    if [[ "${MASTER_PORT}" == "auto" ]]; then
+      master_port="$(pick_port)"
+    else
+      master_port="${MASTER_PORT}"
+    fi
+
+    train_args_string="$(train_args)"
+    read -r -a train_args_array <<< "${train_args_string}"
+
+    log "Training started."
+    run_cmd torchrun ${TORCHRUN_EXTRA} \
+      --nproc_per_node="${NPROC_PER_NODE}" \
+      --master_port="${master_port}" \
+      "${TRAIN_PY}" \
+      --config "${tmpcfg}" \
+      "${train_args_array[@]}"
+
+    ckpt_dir="${REPO_ROOT}/results/${run_name_full}/checkpoints"
+    if ! checkpoint="$(find_checkpoint "${ckpt_dir}")"; then
+      log "WARNING: No checkpoint found in ${ckpt_dir}; skipping inference."
+      rm -f "${tmpcfg}"
+      continue
+    fi
+    log "Using checkpoint: ${checkpoint}"
+
+    if [[ "${RUN_INFERENCE}" == "true" ]]; then
+      if [[ "${EXP_KIND}" == "fixed_traces" ]]; then
+        infer_args_string="$(infer_args fixed_traces "${EXP_MASK_MODE}" "${EXP_MISSING_TRACES}")"
       else
-        master_port="${MASTER_PORT}"
+        infer_args_string="$(infer_args ratio "${EXP_MASK_MODE}" "${EXP_MASK_RATIO}")"
       fi
-      # shellcheck disable=SC2086
-      torchrun ${TORCHRUN_EXTRA} --nproc_per_node="${NPROC_PER_NODE}" \
-        --master_port="${master_port}" \
-        "${TRAIN_PY}" --config "${tmpcfg}" \
-        --mask-mode "${mask_mode}" --mask-ratio "${mask_ratio}"
+      read -r -a infer_args_array <<< "${infer_args_string}"
 
-      # --- Find latest checkpoint ---
-      ckpt_dir="${REPO_ROOT}/results/${run_name_full}/checkpoints"
-      latest_ckpt=$(ls -t "${ckpt_dir}"/epoch_*.pt 2>/dev/null | head -1)
-      if [[ -z "${latest_ckpt}" ]]; then
-        echo "[$(date -Iseconds)] WARNING: No checkpoint found in ${ckpt_dir}, skipping inference." >&2
-        continue
-      fi
-      echo "[$(date -Iseconds)] Using checkpoint: ${latest_ckpt}"
-
-      # --- Infer (matching training ratio) ---
       infer_out="${REPO_ROOT}/results/${run_name_full}/inference"
-      # shellcheck disable=SC2086
-      python "${REPO_ROOT}/${INFER_PY}" \
+
+      log "Inference started: matching training missing setting."
+      run_cmd python "${REPO_ROOT}/${INFER_PY}" \
         --config "${tmpcfg}" \
-        --checkpoint "${latest_ckpt}" \
+        --checkpoint "${checkpoint}" \
         --output-dir "${infer_out}" \
-        --mask-mode "${mask_mode}" --mask-ratio "${mask_ratio}" \
+        "${infer_args_array[@]}" \
         --device "${INFER_DEVICE}"
+    fi
 
-      # --- Infer (extra: +0.1 missing ratio, tests generalization) ---
-      ratio_extra=$(awk "BEGIN {printf \"%.1f\", ${mask_ratio}+0.1}")
-      ratio_extra_pct=$(echo "${ratio_extra}" | awk '{printf "%d", $1*100}')
-      infer_out_extra="${REPO_ROOT}/results/${run_name_full}/inference_ratio${ratio_extra_pct}"
-      # shellcheck disable=SC2086
-      python "${REPO_ROOT}/${INFER_PY}" \
+    if [[ "${RUN_EXTRA_INFERENCE}" == "true" ]]; then
+      if [[ "${EXP_KIND}" == "fixed_traces" ]]; then
+        extra_kind="fixed_traces"
+        extra_value=$((EXP_MISSING_TRACES + EXTRA_TRACES_STEP))
+        extra_suffix="miss${extra_value}tr"
+      else
+        extra_kind="ratio"
+        extra_value="$(ratio_add "${EXP_MASK_RATIO}" "${EXTRA_RATIO_STEP}")"
+        extra_suffix="ratio$(ratio_to_pct "${extra_value}")"
+      fi
+
+      extra_args_string="$(infer_args "${extra_kind}" "${EXP_MASK_MODE}" "${extra_value}")"
+      read -r -a extra_args_array <<< "${extra_args_string}"
+
+      infer_out_extra="${REPO_ROOT}/results/${run_name_full}/inference_${extra_suffix}"
+
+      log "Extra inference started: missing=${extra_value}."
+      run_cmd python "${REPO_ROOT}/${INFER_PY}" \
         --config "${tmpcfg}" \
-        --checkpoint "${latest_ckpt}" \
+        --checkpoint "${checkpoint}" \
         --output-dir "${infer_out_extra}" \
-        --mask-mode "${mask_mode}" --mask-ratio "${ratio_extra}" \
+        "${extra_args_array[@]}" \
         --device "${INFER_DEVICE}"
+    fi
 
-      echo "[$(date -Iseconds)] Done: ${run_name_full}"
-      echo ""
-    done
+    log "Done: ${run_name_full}"
+    echo ""
+
+    rm -f "${tmpcfg}"
   done
 done
 
-echo "[$(date -Iseconds)] All ${TOTAL_RUNS} runs complete."
+log "All ${TOTAL_RUNS} runs complete."
