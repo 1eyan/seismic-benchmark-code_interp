@@ -95,8 +95,18 @@ def _preprocess_shots(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.n
             per=str(prep.get("normalize_scope", "global")),
         )
 
-    if "mask_traces" not in skip:
-        mask_mode = str(prep.get("mask_mode", "uniform"))
+    # if "mask_traces" not in skip:
+    #     mask_mode = str(prep.get("mask_mode", "uniform"))
+    #     mask_ratio = float(prep.get("mask_ratio", 0.5))
+    #     mask_kwargs: Dict[str, Any] = {"mode": mask_mode, "ratio": mask_ratio}
+    #     if mask_mode == "uniform":
+    #         mask_kwargs["uniform_stride"] = int(prep.get("uniform_stride", 2))
+    #     masked, _ = mask_traces(shots, **mask_kwargs)
+    # else:
+    #     masked = shots
+
+    mask_mode = str(prep.get("mask_mode", "uniform"))
+    if "mask_traces" not in skip and mask_mode != "continuous":
         mask_ratio = float(prep.get("mask_ratio", 0.5))
         mask_kwargs: Dict[str, Any] = {"mode": mask_mode, "ratio": mask_ratio}
         if mask_mode == "uniform":
@@ -121,24 +131,76 @@ def _preprocess_shots(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.n
 
     return masked, shots, per_shot_ffid
 
-
 def _patchify_pairs(
     input_shots: np.ndarray, target_shots: np.ndarray, cfg: Dict[str, Any]
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Patchify given shot subsets."""
+    """Patchify given shot subsets.
+
+    For continuous missing, apply trace masking after patchification.
+    For random/uniform missing, keep the original shot-level masking logic.
+    Optional patch-level normalization is applied after the final input-target
+    patch pairs are constructed.
+    """
     prep = cfg["preprocess"]
     patch_t = int(prep.get("patch_time", 256))
     patch_x = int(prep.get("patch_trace", 128))
     overlap = float(prep.get("patch_overlap", 0.5))
 
     target_patches, _ = patchify_uniform(
-        target_shots, patch_size=(patch_x, patch_t), overlap=overlap, output_ndim=4
+        target_shots,
+        patch_size=(patch_x, patch_t),
+        overlap=overlap,
+        output_ndim=4,
     )
-    input_patches, _ = patchify_uniform(
-        input_shots, patch_size=(patch_x, patch_t), overlap=overlap, output_ndim=4
-    )
-    return input_patches.astype(np.float32), target_patches.astype(np.float32)
 
+    input_patches, _ = patchify_uniform(
+        input_shots,
+        patch_size=(patch_x, patch_t),
+        overlap=overlap,
+        output_ndim=4,
+    )
+
+    mask_mode = str(prep.get("mask_mode", "uniform"))
+
+    if mask_mode == "continuous" and "mask_traces" not in set(prep.get("skip", [])):
+        n_patch_traces = target_patches.shape[2]
+
+        missing_traces = prep.get("continuous_missing_traces")
+        mask_ratio = float(prep.get("mask_ratio", 0.1))
+        if missing_traces is not None:
+            n_missing = int(missing_traces)
+            if not 1 <= n_missing < n_patch_traces:
+                raise ValueError(
+                    f"continuous_missing_traces must be in [1, {n_patch_traces - 1}], "
+                    f"got {n_missing}."
+                )
+        else:
+            n_missing = None
+
+        patches_3d = target_patches[:, 0, :, :]
+        masked_3d, _ = mask_traces(
+            patches_3d,
+            mode="continuous",
+            ratio=mask_ratio,
+            missing_traces=n_missing,
+        )
+
+        input_patches = masked_3d[:, None, :, :]
+
+    if bool(prep.get("patch_normalize", False)):
+        eps = float(prep.get("patch_norm_eps", 1e-6))
+
+        scale = np.max(
+            np.abs(input_patches),
+            axis=(1, 2, 3),
+            keepdims=True,
+        )
+        scale = np.maximum(scale, eps)
+
+        input_patches = input_patches / scale
+        target_patches = target_patches / scale
+
+    return input_patches.astype(np.float32), target_patches.astype(np.float32)
 
 def _build_patch_pairs(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
     """Backward-compatible full pipeline."""
@@ -162,15 +224,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mask-mode",
         type=str,
-        default="uniform",
+        default="continuous",
         choices=["uniform", "random", "continuous"],
         help="Trace masking mode.",
     )
     parser.add_argument(
         "--mask-ratio",
         type=float,
-        default=0.5,
+        default=0.2,
         help="Trace missing ratio in (0, 1).",
+    )
+    parser.add_argument(
+        "--continuous-missing-traces",
+        type=int,
+        default=None,
+        help="Number of contiguous missing traces for continuous masking.",
     )
     return parser.parse_args()
 
@@ -183,9 +251,16 @@ def main() -> None:
     cfg.setdefault("preprocess", {})
     cfg["preprocess"]["mask_mode"] = args.mask_mode
     cfg["preprocess"]["mask_ratio"] = args.mask_ratio
+    if args.continuous_missing_traces is not None:
+        cfg["preprocess"]["continuous_missing_traces"] = args.continuous_missing_traces
 
-    ratio_pct = int(round(args.mask_ratio * 100))
-    cfg["experiment"]["name"] = f"{cfg['experiment']['name']}_{args.mask_mode}_miss{ratio_pct}"
+    if args.mask_mode == "continuous" and args.continuous_missing_traces is not None:
+        cfg["experiment"]["name"] = (
+            f"{cfg['experiment']['name']}_{args.mask_mode}_miss{args.continuous_missing_traces}tr"
+        )
+    else:
+        ratio_pct = int(round(args.mask_ratio * 100))
+        cfg["experiment"]["name"] = f"{cfg['experiment']['name']}_{args.mask_mode}_miss{ratio_pct}"
 
     distributed, rank, local_rank, world_size = init_distributed()
 

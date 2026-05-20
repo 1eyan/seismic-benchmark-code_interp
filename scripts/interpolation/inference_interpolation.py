@@ -120,6 +120,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Trace missing ratio in (0, 1). Must match training. Defaults to config preprocess.mask_ratio.",
     )
+    parser.add_argument(
+        "--continuous-missing-traces",
+        type=int,
+        default=None,
+        help="Number of contiguous missing traces for continuous masking. Overrides config preprocess.continuous_missing_traces.",
+    )
     return parser.parse_args()
 
 
@@ -166,6 +172,8 @@ def main() -> None:
     prep = cfg.get("preprocess", {})
     mask_mode = args.mask_mode if args.mask_mode is not None else str(prep.get("mask_mode", "uniform"))
     mask_ratio = args.mask_ratio if args.mask_ratio is not None else float(prep.get("mask_ratio", 0.5))
+    if args.continuous_missing_traces is not None:
+        prep["continuous_missing_traces"] = args.continuous_missing_traces
 
     # ------------------------------------------------------------------
     # 1. Build model and load checkpoint
@@ -217,11 +225,17 @@ def main() -> None:
     # input = masked traces; target = unmasked (original) traces
     if "mask_traces" not in skip:
         mask_kwargs: Dict[str, Any] = {"mode": mask_mode, "ratio": mask_ratio}
+
         if mask_mode == "uniform":
             mask_kwargs["uniform_stride"] = int(prep.get("uniform_stride", 2))
-        masked, _ = mask_traces(shots, **mask_kwargs)
+
+        if mask_mode == "continuous" and prep.get("continuous_missing_traces") is not None:
+            mask_kwargs["missing_traces"] = int(prep["continuous_missing_traces"])
+
+        masked, trace_mask = mask_traces(shots, **mask_kwargs)
     else:
         masked = shots
+        trace_mask = np.zeros(shots.shape[:2], dtype=bool)
     shots_norm = shots
     masked_norm = masked
 
@@ -240,7 +254,11 @@ def main() -> None:
         overlap=overlap,
         device=device,
         batch_size=batch_size,
+        patch_normalize=bool(prep.get("patch_normalize", False)),
+        patch_norm_eps=float(prep.get("patch_norm_eps", 1e-6)),
     )
+    mask_3d = trace_mask[..., None]
+    recon_norm = np.where(mask_3d, pred_norm, shots_norm)
     infer_elapsed = time.time() - infer_start
     print(f"Inference time: {infer_elapsed:.2f}s")
 
@@ -292,7 +310,7 @@ def main() -> None:
             ssim_data_range = float(m["params"]["data_range"])
 
     per_shot, mean = compute_shot_metrics(
-        pred_norm,
+        recon_norm,
         shots_norm,
         metric_names=metric_names,
         psnr_peak=psnr_peak,
@@ -302,7 +320,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 6. Inverse preprocessing (back to original amplitude domain)
     # ------------------------------------------------------------------
-    pred_shots = _inverse(pred_norm)
+    pred_shots = _inverse(recon_norm)
     target_shots = _inverse(shots_norm)
     input_shots = _inverse(masked_norm)
 
