@@ -300,3 +300,122 @@ class TrainingLogger:
             self.close()
         except Exception:  # pragma: no cover - best-effort cleanup
             pass
+
+
+class StepLossLogger:
+    """Append per-train-step loss rows and refresh step-level loss curves."""
+
+    _columns = [
+        "epoch",
+        "step",
+        "global_step",
+        "loss",
+        "lr",
+        "step_time_sec",
+        "epoch_elapsed_sec",
+    ]
+
+    def __init__(self, log_dir: Path, *, flush_interval: int = 50) -> None:
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.flush_interval = max(1, int(flush_interval))
+        self._path = self.log_dir / "step_loss_history.csv"
+        self._curve_path = self.log_dir / "step_loss_curve.png"
+        self._curve_log_path = self.log_dir / "step_loss_curve_log.png"
+        self._global_steps: list[int] = []
+        self._losses: list[float] = []
+        self._rows_since_flush = 0
+        self._dirty = False
+        self._closed = False
+        self._file: Optional[TextIO] = None
+        self._writer: Optional[csv.DictWriter[str]] = None
+
+        self._rehydrate_history()
+        self._open()
+
+    @property
+    def next_global_step(self) -> int:
+        return (max(self._global_steps) + 1) if self._global_steps else 1
+
+    def _rehydrate_history(self) -> None:
+        if not self._path.exists() or self._path.stat().st_size == 0:
+            return
+        with self._path.open(encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                try:
+                    self._global_steps.append(int(row["global_step"]))
+                    self._losses.append(float(row["loss"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+
+    def _open(self) -> None:
+        existed = self._path.exists() and self._path.stat().st_size > 0
+        self._file = self._path.open("a", encoding="utf-8", newline="")
+        self._writer = csv.DictWriter(self._file, fieldnames=self._columns)
+        if not existed:
+            self._writer.writeheader()
+            self._file.flush()
+
+    def log_step(
+        self,
+        *,
+        epoch: int,
+        step: int,
+        global_step: int,
+        loss: float,
+        lr: float,
+        step_time_sec: float,
+        epoch_elapsed_sec: float,
+    ) -> None:
+        if self._closed:
+            raise RuntimeError("StepLossLogger is closed.")
+        assert self._writer is not None
+        self._writer.writerow(
+            {
+                "epoch": int(epoch),
+                "step": int(step),
+                "global_step": int(global_step),
+                "loss": _safe_value(float(loss)),
+                "lr": _safe_value(float(lr)),
+                "step_time_sec": _safe_value(float(step_time_sec)),
+                "epoch_elapsed_sec": _safe_value(float(epoch_elapsed_sec)),
+            }
+        )
+        self._global_steps.append(int(global_step))
+        self._losses.append(float(loss))
+        self._dirty = True
+        self._rows_since_flush += 1
+        if self._rows_since_flush >= self.flush_interval:
+            self.flush()
+
+    def refresh_curves(self) -> None:
+        if not self._dirty:
+            return
+        from .visualization import _plot_step_loss_curve
+
+        _plot_step_loss_curve(self._global_steps, self._losses, self._curve_path)
+        _plot_step_loss_curve(
+            self._global_steps,
+            self._losses,
+            self._curve_log_path,
+            log_y=True,
+        )
+        self._dirty = False
+
+    def flush(self) -> None:
+        if self._file is not None and not self._file.closed:
+            self._file.flush()
+        self._rows_since_flush = 0
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        try:
+            self.refresh_curves()
+        except Exception:
+            pass
+        finally:
+            if self._file is not None and not self._file.closed:
+                self._file.flush()
+                self._file.close()
+            self._closed = True

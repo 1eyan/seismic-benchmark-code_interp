@@ -32,14 +32,14 @@ __all__ = [
 
 def _gen_uniform_starts(length: int, patch_len: int, stride: int) -> np.ndarray:
     """Regular-grid starts with the last position anchored to ``length - patch_len``."""
-    if length < patch_len:
-        raise ValueError(
-            f"axis length {length} is smaller than patch length {patch_len}."
-        )
+    if patch_len <= 0:
+        raise ValueError(f"patch length must be positive, got {patch_len}.")
+    if stride <= 0:
+        raise ValueError(f"patch stride must be positive, got {stride}.")
+    if length <= patch_len:
+        return np.asarray([0], dtype=np.int64)
     last_valid = length - patch_len
     starts = list(range(0, last_valid + 1, stride))
-    if not starts:
-        starts = [0]
     if starts[-1] != last_valid:
         starts.append(last_valid)
     return np.asarray(starts, dtype=np.int64)

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import csv
+import math
 import os
+import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -714,3 +717,237 @@ def count_parameters(model: nn.Module) -> str:
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return f"Total: {total / 1e6:.2f}M | Trainable: {trainable / 1e6:.2f}M"
+
+
+# ----------------------------------------------------------------------
+# First-break picking training / evaluation utilities
+# ----------------------------------------------------------------------
+
+
+def _with_progress(
+    iterable: Iterable[Any],
+    *,
+    enabled: bool,
+    desc: str,
+    total: Optional[int] = None,
+) -> Iterable[Any]:
+    """Wrap an iterable with tqdm when available."""
+    if not enabled:
+        return iterable
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        return iterable
+    return tqdm(iterable, desc=desc, total=total, dynamic_ncols=True, leave=False)
+
+
+def _safe_csv_float(value: float) -> float:
+    return value if math.isfinite(value) else float("nan")
+
+
+def _unpack_first_break_batch(batch: Any) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    if isinstance(batch, (tuple, list)) and len(batch) == 3:
+        x, y, target_pick = batch
+        return x, y, target_pick
+    if isinstance(batch, (tuple, list)) and len(batch) == 2:
+        x, y = batch
+        return x, y, None
+    raise ValueError("first-break loaders must yield (input, mask, target_pick).")
+
+
+def train_one_epoch_first_break(
+    model: torch.nn.Module,
+    loader: Any,
+    loss_fn: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    epoch: int,
+    scheduler: Optional[Any] = None,
+    grad_clip: Optional[float] = None,
+    log_interval: int = 50,
+    logger: Optional[Any] = None,
+    progress_bar: bool = False,
+    step_loss_logger: Optional[Any] = None,
+) -> Dict[str, float]:
+    """Run one first-break training epoch with ``(input, mask, target_pick)`` batches."""
+    model.train()
+    total_loss = 0.0
+    n_batches = 0
+    epoch_start = time.perf_counter()
+    total_batches = len(loader) if hasattr(loader, "__len__") else None
+    train_iter = _with_progress(
+        loader,
+        enabled=progress_bar,
+        desc=f"epoch {epoch + 1} train",
+        total=total_batches,
+    )
+    for step, batch in enumerate(train_iter):
+        step_start = time.perf_counter()
+        x, y, _ = _unpack_first_break_batch(batch)
+        x = x.to(device, non_blocking=True)
+        y = y.to(device, non_blocking=True)
+
+        optimizer.zero_grad(set_to_none=True)
+        pred = model(x)
+        loss = loss_fn(pred, y)
+        loss.backward()
+        if grad_clip and grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        optimizer.step()
+
+        loss_value = float(loss.detach().item())
+        step_time_sec = time.perf_counter() - step_start
+        epoch_elapsed_sec = time.perf_counter() - epoch_start
+        total_loss += loss_value
+        n_batches += 1
+        mean_so_far = total_loss / max(n_batches, 1)
+        lr = float(optimizer.param_groups[0]["lr"])
+
+        if hasattr(train_iter, "set_postfix"):
+            train_iter.set_postfix(
+                loss=f"{loss_value:.4g}",
+                avg_loss=f"{mean_so_far:.4g}",
+                lr=f"{lr:.3g}",
+            )
+        if step_loss_logger is not None:
+            if total_batches is not None:
+                global_step = epoch * int(total_batches) + step + 1
+            else:
+                global_step = step_loss_logger.next_global_step
+            step_loss_logger.log_step(
+                epoch=epoch,
+                step=step + 1,
+                global_step=global_step,
+                loss=loss_value,
+                lr=lr,
+                step_time_sec=step_time_sec,
+                epoch_elapsed_sec=epoch_elapsed_sec,
+            )
+        if logger is not None and (step + 1) % max(1, int(log_interval)) == 0:
+            logger.info(
+                f"[epoch={epoch} step={step + 1}/{len(loader)}] "
+                f"train_step_loss={loss_value:.6g}"
+            )
+
+    if step_loss_logger is not None:
+        step_loss_logger.flush()
+    if scheduler is not None:
+        scheduler.step()
+    mean_loss = total_loss / max(n_batches, 1)
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        ws = torch.distributed.get_world_size()
+        if ws > 1:
+            stat = torch.tensor(
+                [float(total_loss), float(n_batches)],
+                device=device,
+                dtype=torch.float64,
+            )
+            torch.distributed.all_reduce(stat, op=torch.distributed.ReduceOp.SUM)
+            mean_loss = float(stat[0].item() / max(stat[1].item(), 1.0))
+    return {"train": float(mean_loss)}
+
+
+@torch.no_grad()
+def evaluate_first_break(
+    model: torch.nn.Module,
+    loader: Any,
+    loss_fn: torch.nn.Module,
+    metrics: Optional[Dict[str, Any]],
+    device: torch.device,
+    *,
+    desc: str = "eval",
+    progress_bar: bool = False,
+    loss_key: str = "val",
+) -> tuple[Dict[str, float], Dict[str, float]]:
+    """Evaluate first-break losses and metrics, skipping NaN metric batches."""
+    model.eval()
+    total_loss = 0.0
+    n_batches = 0
+    metric_sums: Dict[str, float] = {k: 0.0 for k in (metrics or {})}
+    metric_counts: Dict[str, int] = {k: 0 for k in (metrics or {})}
+    eval_iter = _with_progress(
+        loader,
+        enabled=progress_bar,
+        desc=desc,
+        total=len(loader) if hasattr(loader, "__len__") else None,
+    )
+    for batch in eval_iter:
+        x, y, target_pick = _unpack_first_break_batch(batch)
+        x = x.to(device, non_blocking=True)
+        y = y.to(device, non_blocking=True)
+        if target_pick is not None:
+            target_pick = target_pick.to(device, non_blocking=True)
+
+        pred = model(x)
+        loss = loss_fn(pred, y)
+        total_loss += float(loss.detach().item())
+        n_batches += 1
+
+        for name, metric in (metrics or {}).items():
+            value = float(metric(pred, y, target_pick=target_pick))
+            if np.isfinite(value):
+                metric_sums[name] += value
+                metric_counts[name] += 1
+
+    losses = {loss_key: float(total_loss / max(n_batches, 1))}
+    out_metrics = {
+        name: float(metric_sums[name] / metric_counts[name])
+        if metric_counts[name] > 0
+        else float("nan")
+        for name in metric_sums
+    }
+    return losses, out_metrics
+
+
+def _write_final_test_metrics(
+    path: Path,
+    *,
+    best_epoch: int,
+    test_loss: float,
+    metrics: Dict[str, float],
+    metric_names: Iterable[str],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    columns = ["split", "best_epoch", "loss", *metric_names]
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=columns)
+        writer.writeheader()
+        row = {
+            "split": "test",
+            "best_epoch": int(best_epoch),
+            "loss": _safe_csv_float(float(test_loss)),
+        }
+        for name in metric_names:
+            row[name] = _safe_csv_float(float(metrics.get(name, float("nan"))))
+        writer.writerow(row)
+
+
+def _format_final_test_summary(
+    *,
+    best_epoch: int,
+    test_loss: float,
+    metrics: Dict[str, float],
+    metric_names: Iterable[str],
+) -> str:
+    parts = [f"best_epoch={best_epoch}", f"loss={test_loss:.6g}"]
+    for name in metric_names:
+        value = float(metrics.get(name, float("nan")))
+        parts.append(f"{name}={value:.6g}" if math.isfinite(value) else f"{name}=nan")
+    return "Final test: " + ", ".join(parts)
+
+
+def compute_length_stats(lengths: Sequence[int]) -> Tuple[int, float, float, float, int]:
+    """Return ``(min, p10, median, p90, max)`` from a sequence of integer lengths."""
+    if len(lengths) == 0:
+        return 0, 0.0, 0.0, 0.0, 0
+    arr = np.asarray(lengths, dtype=np.float64)
+    p10, median, p90 = np.quantile(arr, [0.1, 0.5, 0.9])
+    return int(arr.min()), float(p10), float(median), float(p90), int(arr.max())
+
+
+def format_length_stats(lengths: Sequence[int]) -> str:
+    """Format length statistics as a human-readable string."""
+    mn, p10, median, p90, mx = compute_length_stats(lengths)
+    if mx <= 0:
+        return "n/a"
+    return f"min={mn}, p10={p10:.1f}, median={median:.1f}, p90={p90:.1f}, max={mx}"

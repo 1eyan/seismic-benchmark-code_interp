@@ -18,7 +18,16 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 
+from tools.patching import _gen_uniform_starts
 from tools.preprocessing import normalize
+from tools.segy_read import (
+    contiguous_ffid_blocks,
+    group_coordinates_are_usable,
+    read_group_coordinates,
+    read_line_id_header,
+)
+from utils.datasets import as_path, cap_split_samples, split_block_indices
+from utils.train_utils import compute_length_stats, format_length_stats
 
 try:
     import segyio
@@ -91,14 +100,9 @@ class FirstBreakIndex:
     pick_indices_by_pair: Tuple[np.ndarray, ...]
 
 
-def _as_path(root: Path, value: str) -> Path:
-    path = Path(value)
-    return path if path.is_absolute() else root / path
-
-
 def _iter_data_files(data_dir: Path, files: Optional[Sequence[str]]) -> List[Path]:
     if files:
-        return [_as_path(data_dir, name) for name in files]
+        return [as_path(data_dir, name) for name in files]
     return sorted(
         p for p in data_dir.iterdir()
         if p.is_file() and p.suffix.lower() in _SEGY_SUFFIXES
@@ -129,45 +133,6 @@ def _resolve_label_path(data_path: Path, label_dir: Path) -> Path:
     )
 
 
-def _contiguous_ffid_blocks(ffids: np.ndarray, name: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if ffids.ndim != 1 or ffids.size == 0:
-        raise ValueError(f"{name}: FieldRecord array must be non-empty and 1-D.")
-    changes = np.flatnonzero(ffids[1:] != ffids[:-1]) + 1
-    starts = np.concatenate(([0], changes)).astype(np.int64)
-    stops = np.concatenate((changes, [ffids.size])).astype(np.int64)
-    values = ffids[starts].astype(np.int64)
-    if np.unique(values).size != values.size:
-        raise ValueError(
-            f"{name}: repeated non-contiguous FieldRecord values found. "
-            "This dataset expects each FFID gather to occupy one contiguous block."
-        )
-    return values, starts, stops
-
-
-def _read_group_coordinates(segy_file: Any, name: str) -> Tuple[np.ndarray, np.ndarray]:
-    try:
-        group_x = np.asarray(
-            segy_file.attributes(segyio.TraceField.GroupX)[:],
-            dtype=np.float64,
-        )
-        group_y = np.asarray(
-            segy_file.attributes(segyio.TraceField.GroupY)[:],
-            dtype=np.float64,
-        )
-    except Exception as exc:
-        raise ValueError(
-            f"{name}: GroupX/GroupY trace headers are required for receiver-line "
-            "geometry inference. Set data.gather_segment.infer_line_from_geometry=false "
-            "to disable geometry inference."
-        ) from exc
-    if group_x.ndim != 1 or group_y.ndim != 1 or group_x.size != group_y.size:
-        raise ValueError(f"{name}: GroupX/GroupY headers must be matching 1-D arrays.")
-    return group_x, group_y
-
-
-def _group_coordinates_are_usable(group_x: np.ndarray, group_y: np.ndarray) -> bool:
-    distances = np.hypot(np.diff(group_x), np.diff(group_y))
-    return bool(np.any(np.isfinite(distances) & (distances > 0)))
 
 
 def _line_id_header_from_cfg(segment_cfg: Mapping[str, Any]) -> Optional[str]:
@@ -209,48 +174,6 @@ def _infer_line_from_geometry(segment_cfg: Mapping[str, Any]) -> bool:
         )
     return bool(fallback)
 
-
-def _read_line_id_header(
-    segy_file: Any,
-    name: str,
-    *,
-    header_name: str,
-) -> Optional[np.ndarray]:
-    trace_field = getattr(segyio.TraceField, header_name, None)
-    if trace_field is None:
-        warnings.warn(
-            f"{name}: line_id_header={header_name!r} is not a known SEG-Y trace "
-            "header; inferring receiver lines from GroupX/GroupY geometry.",
-            RuntimeWarning,
-        )
-        return None
-    try:
-        line_ids = np.asarray(
-            segy_file.attributes(trace_field)[:],
-            dtype=np.int64,
-        )
-    except Exception:
-        warnings.warn(
-            f"{name}: line_id_header={header_name!r} is unavailable; inferring "
-            "receiver lines from GroupX/GroupY geometry.",
-            RuntimeWarning,
-        )
-        return None
-    if line_ids.ndim != 1 or line_ids.size == 0:
-        warnings.warn(
-            f"{name}: line_id_header={header_name!r} is empty or not 1-D; "
-            "inferring receiver lines from GroupX/GroupY geometry.",
-            RuntimeWarning,
-        )
-        return None
-    if not bool(np.any(line_ids != 0)):
-        warnings.warn(
-            f"{name}: line_id_header={header_name!r} is all zeros; inferring "
-            "receiver lines from GroupX/GroupY geometry.",
-            RuntimeWarning,
-        )
-        return None
-    return line_ids
 
 
 def _line_id_segments(
@@ -381,80 +304,6 @@ def _receiver_line_segments(
     )
 
 
-def _segment_length_stats(lengths: Sequence[int]) -> Tuple[int, float, float, float, int]:
-    if len(lengths) == 0:
-        return 0, 0.0, 0.0, 0.0, 0
-    arr = np.asarray(lengths, dtype=np.float64)
-    p10, median, p90 = np.quantile(arr, [0.1, 0.5, 0.9])
-    return int(arr.min()), float(p10), float(median), float(p90), int(arr.max())
-
-
-def _format_segment_length_stats(lengths: Sequence[int]) -> str:
-    mn, p10, median, p90, mx = _segment_length_stats(lengths)
-    if mx <= 0:
-        return "n/a"
-    return f"min={mn}, p10={p10:.1f}, median={median:.1f}, p90={p90:.1f}, max={mx}"
-
-
-def _gen_starts(length: int, patch_len: int, stride: int) -> np.ndarray:
-    if patch_len <= 0:
-        raise ValueError(f"patch length must be positive, got {patch_len}.")
-    if stride <= 0:
-        raise ValueError(f"patch stride must be positive, got {stride}.")
-    if length <= patch_len:
-        return np.asarray([0], dtype=np.int64)
-    last = length - patch_len
-    starts = list(range(0, last + 1, stride))
-    if starts[-1] != last:
-        starts.append(last)
-    return np.asarray(starts, dtype=np.int64)
-
-
-def _split_block_indices(
-    n_blocks: int,
-    split_cfg: Mapping[str, Any],
-    *,
-    seed: int,
-    pair_idx: int,
-) -> Dict[str, np.ndarray]:
-    if n_blocks < 3:
-        raise ValueError(
-            f"Need at least 3 FFID gathers for train/val/test split, got {n_blocks}."
-        )
-
-    ratios = {
-        "train": float(split_cfg.get("train", 0.8)),
-        "val": float(split_cfg.get("val", 0.1)),
-        "test": float(split_cfg.get("test", 0.1)),
-    }
-    total = sum(ratios.values())
-    if total <= 0:
-        raise ValueError(f"Split ratios must sum to a positive value, got {ratios}.")
-    ratios = {k: v / total for k, v in ratios.items()}
-
-    indices = np.arange(n_blocks, dtype=np.int64)
-    if bool(split_cfg.get("shuffle_ffids", True)):
-        rng = np.random.default_rng(seed + pair_idx * 1009)
-        rng.shuffle(indices)
-
-    n_val = max(1, int(round(n_blocks * ratios["val"])))
-    n_test = max(1, int(round(n_blocks * ratios["test"])))
-    n_train = n_blocks - n_val - n_test
-    while n_train < 1:
-        if n_val >= n_test and n_val > 1:
-            n_val -= 1
-        elif n_test > 1:
-            n_test -= 1
-        else:
-            raise ValueError(f"Cannot split {n_blocks} FFIDs into non-empty splits.")
-        n_train = n_blocks - n_val - n_test
-
-    return {
-        "train": indices[:n_train],
-        "val": indices[n_train:n_train + n_val],
-        "test": indices[n_train + n_val:n_train + n_val + n_test],
-    }
-
 
 def _sample_label_summary(
     label_file: Any,
@@ -524,41 +373,14 @@ def _read_first_break_pick_indices(
     return picks
 
 
-def _cap_patch_refs(
-    patches_by_split: Dict[str, List[PatchRef]],
-    cap_cfg: Any,
-    *,
-    seed: int,
-) -> Dict[str, List[PatchRef]]:
-    if cap_cfg is None:
-        return patches_by_split
-    if isinstance(cap_cfg, Mapping):
-        caps = {split: cap_cfg.get(split) for split in _SPLITS}
-    else:
-        caps = {split: cap_cfg for split in _SPLITS}
-
-    out: Dict[str, List[PatchRef]] = {}
-    rng = np.random.default_rng(seed)
-    for split, refs in patches_by_split.items():
-        cap_raw = caps.get(split)
-        if cap_raw is None:
-            out[split] = refs
-            continue
-        cap = int(cap_raw)
-        if cap <= 0 or len(refs) <= cap:
-            out[split] = refs
-            continue
-        keep = np.sort(rng.choice(len(refs), size=cap, replace=False))
-        out[split] = [refs[int(i)] for i in keep]
-    return out
 
 
 def build_first_break_index(cfg: Mapping[str, Any]) -> FirstBreakIndex:
     """Build the full lazy patch index from a YAML config mapping."""
     data_cfg = cfg["data"]
     root = Path(data_cfg["root"]).expanduser()
-    data_dir = _as_path(root, str(data_cfg.get("data_dir", "data")))
-    label_dir = _as_path(root, str(data_cfg.get("label_dir", "label")))
+    data_dir = as_path(root, str(data_cfg.get("data_dir", "data")))
+    label_dir = as_path(root, str(data_cfg.get("label_dir", "label")))
     if not data_dir.is_dir():
         raise FileNotFoundError(f"Data directory not found: {data_dir}")
     if not label_dir.is_dir():
@@ -631,25 +453,25 @@ def build_first_break_index(cfg: Mapping[str, Any]) -> FirstBreakIndex:
             if not np.array_equal(data_ffids, label_ffids):
                 raise ValueError(f"{data_path.name}/{label_path.name}: FFID headers differ.")
 
-            ffids, starts, stops = _contiguous_ffid_blocks(data_ffids, data_path.name)
+            ffids, starts, stops = contiguous_ffid_blocks(data_ffids, data_path.name)
             counts = stops - starts
             line_ids: Optional[np.ndarray] = None
             group_x: Optional[np.ndarray] = None
             group_y: Optional[np.ndarray] = None
             if segment_enabled:
                 if line_id_header is not None:
-                    line_ids = _read_line_id_header(
+                    line_ids = read_line_id_header(
                         data_file,
                         data_path.name,
                         header_name=line_id_header,
                     )
                 if infer_line_from_geometry:
                     try:
-                        group_x, group_y = _read_group_coordinates(data_file, data_path.name)
+                        group_x, group_y = read_group_coordinates(data_file, data_path.name)
                     except ValueError as exc:
                         warnings.warn(str(exc), RuntimeWarning)
                     else:
-                        if not _group_coordinates_are_usable(group_x, group_y):
+                        if not group_coordinates_are_usable(group_x, group_y):
                             warnings.warn(
                                 f"{data_path.name}: GroupX/GroupY headers have no usable "
                                 "neighbor-distance variation; falling back to one segment per FFID.",
@@ -722,7 +544,7 @@ def build_first_break_index(cfg: Mapping[str, Any]) -> FirstBreakIndex:
             segment_length_median,
             segment_length_p90,
             segment_length_max,
-        ) = _segment_length_stats(pair_segment_lengths)
+        ) = compute_length_stats(pair_segment_lengths)
 
         pair_infos.append(
             SegyPairInfo(
@@ -745,20 +567,20 @@ def build_first_break_index(cfg: Mapping[str, Any]) -> FirstBreakIndex:
             )
         )
 
-        split_blocks = _split_block_indices(
+        split_blocks = split_block_indices(
             int(ffids.size),
             data_cfg.get("split", {}),
             seed=seed,
-            pair_idx=pair_idx,
+            block_id_offset=pair_idx,
         )
-        time_starts = _gen_starts(n_samples, patch_time, stride_time)
+        time_starts = _gen_uniform_starts(n_samples, patch_time, stride_time)
         for split, block_indices in split_blocks.items():
             for block_idx in block_indices.tolist():
                 ffid_start = int(starts[block_idx])
                 ffid_stop = int(stops[block_idx])
                 for segment_idx, segment_source, segment_start, segment_stop in segments_by_block[int(block_idx)]:
                     segment_len = segment_stop - segment_start
-                    trace_starts = _gen_starts(segment_len, patch_trace, stride_trace)
+                    trace_starts = _gen_uniform_starts(segment_len, patch_trace, stride_trace)
                     for trace_start in trace_starts.tolist():
                         for time_start in time_starts.tolist():
                             patches_by_split[split].append(
@@ -776,7 +598,7 @@ def build_first_break_index(cfg: Mapping[str, Any]) -> FirstBreakIndex:
                                 )
                             )
 
-    patches_by_split = _cap_patch_refs(
+    patches_by_split = cap_split_samples(
         patches_by_split,
         data_cfg.get("max_patches_per_split"),
         seed=seed,
@@ -806,7 +628,7 @@ def summarize_first_break_index(index: FirstBreakIndex) -> str:
     lines = [
         "First-break index:",
         f"  ffids={total_ffids}, receiver_line_segments={len(index.segment_lengths)}",
-        f"  segment_length={_format_segment_length_stats(index.segment_lengths)}",
+        f"  segment_length={format_length_stats(index.segment_lengths)}",
         "  patches: " + ", ".join(
             f"{split}={len(index.patches_by_split[split])}" for split in _SPLITS
         ),
