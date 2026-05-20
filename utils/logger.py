@@ -148,7 +148,10 @@ class TrainingLogger:
             plot_loss_curve(self._loss_history, self._loss_curve_path, title="Loss", log_y=False)
             plot_loss_curve(
                 self._loss_history,
-                self._loss_curve_path.with_stem(self._loss_curve_path.stem + "_log"),
+                # self._loss_curve_path.with_stem(self._loss_curve_path.stem + "_log"),
+                self._loss_curve_path.with_name(
+                    self._loss_curve_path.stem + "_log" + self._loss_curve_path.suffix
+                ),
                 title="Loss (log scale)",
                 log_y=True,
             )

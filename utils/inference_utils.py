@@ -20,6 +20,54 @@ from .metrics import (
 from .visualization import plot_sample
 
 
+# def inference_on_shots(
+#     model: torch.nn.Module,
+#     input_shots: np.ndarray,
+#     patch_size: Tuple[int, int],
+#     overlap: float = 0.0,
+#     device: torch.device = torch.device("cpu"),
+#     batch_size: int = 8,
+# ) -> np.ndarray:
+#     """Patchify a full shot volume, run the model in batches, and reconstruct.
+#
+#     Parameters
+#     ----------
+#     model        : trained ``nn.Module``; will be set to ``eval()`` inside.
+#     input_shots  : ``(n_shots, n_traces, n_time)`` numpy array.
+#     patch_size   : ``(trace, time)`` patch shape forwarded to ``patchify_uniform``.
+#     overlap      : overlap ratio forwarded to ``patchify_uniform``.
+#     device       : device to run inference on.
+#     batch_size   : batch size for the internal DataLoader.
+#
+#     Returns
+#     -------
+#     pred_shots   : ``(n_shots, n_traces, n_time)`` numpy array reconstructed by
+#                    ``unpatchify_uniform``.
+#     """
+#     from tools.patching import patchify_uniform, unpatchify_uniform
+#
+#     patches, info = patchify_uniform(
+#         input_shots, patch_size=patch_size, overlap=overlap, output_ndim=4
+#     )
+#     ds = TensorDataset(torch.from_numpy(patches))
+#     loader = DataLoader(ds, batch_size=batch_size, shuffle=False, drop_last=False)
+#
+#     was_training = model.training
+#     model.eval()
+#     preds: List[torch.Tensor] = []
+#     try:
+#         with torch.no_grad():
+#             for (batch,) in loader:
+#                 batch = batch.to(device, non_blocking=True)
+#                 out = model(batch)
+#                 preds.append(out.cpu())
+#     finally:
+#         if was_training:
+#             model.train()
+#
+#     pred_patches = torch.cat(preds, dim=0).numpy()
+#     return unpatchify_uniform(pred_patches, info)
+
 def inference_on_shots(
     model: torch.nn.Module,
     input_shots: np.ndarray,
@@ -27,34 +75,58 @@ def inference_on_shots(
     overlap: float = 0.0,
     device: torch.device = torch.device("cpu"),
     batch_size: int = 8,
+    patch_normalize: bool = False,
+    patch_norm_eps: float = 1e-6,
 ) -> np.ndarray:
     """Patchify a full shot volume, run the model in batches, and reconstruct.
 
     Parameters
     ----------
-    model        : trained ``nn.Module``; will be set to ``eval()`` inside.
-    input_shots  : ``(n_shots, n_traces, n_time)`` numpy array.
-    patch_size   : ``(trace, time)`` patch shape forwarded to ``patchify_uniform``.
-    overlap      : overlap ratio forwarded to ``patchify_uniform``.
-    device       : device to run inference on.
-    batch_size   : batch size for the internal DataLoader.
+    model            : trained ``nn.Module``; will be set to ``eval()`` inside.
+    input_shots      : ``(n_shots, n_traces, n_time)`` numpy array.
+    patch_size       : ``(trace, time)`` patch shape forwarded to ``patchify_uniform``.
+    overlap          : overlap ratio forwarded to ``patchify_uniform``.
+    device           : device to run inference on.
+    batch_size       : batch size for the internal DataLoader.
+    patch_normalize  : if True, each input patch is normalized by its own
+                       visible max-absolute amplitude before inference.
+    patch_norm_eps   : lower bound for the patch scale.
 
     Returns
     -------
-    pred_shots   : ``(n_shots, n_traces, n_time)`` numpy array reconstructed by
-                   ``unpatchify_uniform``.
+    pred_shots       : ``(n_shots, n_traces, n_time)`` numpy array reconstructed by
+                       ``unpatchify_uniform``.
     """
     from tools.patching import patchify_uniform, unpatchify_uniform
 
     patches, info = patchify_uniform(
-        input_shots, patch_size=patch_size, overlap=overlap, output_ndim=4
+        input_shots,
+        patch_size=patch_size,
+        overlap=overlap,
+        output_ndim=4,
     )
-    ds = TensorDataset(torch.from_numpy(patches))
+
+    patches = patches.astype(np.float32, copy=False)
+
+    if patch_normalize:
+        scales = np.max(
+            np.abs(patches),
+            axis=(1, 2, 3),
+            keepdims=True,
+        ).astype(np.float32)
+        scales = np.maximum(scales, np.float32(patch_norm_eps))
+        patches_for_net = patches / scales
+    else:
+        scales = None
+        patches_for_net = patches
+
+    ds = TensorDataset(torch.from_numpy(patches_for_net))
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False, drop_last=False)
 
     was_training = model.training
     model.eval()
     preds: List[torch.Tensor] = []
+
     try:
         with torch.no_grad():
             for (batch,) in loader:
@@ -66,8 +138,11 @@ def inference_on_shots(
             model.train()
 
     pred_patches = torch.cat(preds, dim=0).numpy()
-    return unpatchify_uniform(pred_patches, info)
 
+    if patch_normalize:
+        pred_patches = pred_patches * scales
+
+    return unpatchify_uniform(pred_patches, info)
 
 def compute_shot_metrics(
     pred_shots: np.ndarray,
