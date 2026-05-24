@@ -22,8 +22,8 @@ from model.first_break_picking import build_model
 from utils import (
     StepLossLogger,
     TrainingLogger,
-    _format_final_test_summary,
-    _write_final_test_metrics,
+    format_final_test_summary,
+    write_final_test_metrics,
     barrier_if_distributed,
     build_first_break_metrics,
     build_loss,
@@ -267,7 +267,7 @@ def run_training(script_file: str) -> None:
                 loss_key="test",
             )
             test_loss = test_losses.get("test", float("nan"))
-            _write_final_test_metrics(
+            write_final_test_metrics(
                 log_dir / "final_test_metrics.csv",
                 best_epoch=best_epoch,
                 test_loss=test_loss,
@@ -275,7 +275,7 @@ def run_training(script_file: str) -> None:
                 metric_names=metric_names,
             )
             logger.info(
-                _format_final_test_summary(
+                format_final_test_summary(
                     best_epoch=best_epoch,
                     test_loss=test_loss,
                     metrics=test_metrics,

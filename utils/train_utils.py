@@ -18,6 +18,7 @@ from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 
+from .logger import _safe_value
 from .metrics import compute_metrics
 
 
@@ -724,7 +725,7 @@ def count_parameters(model: nn.Module) -> str:
 # ----------------------------------------------------------------------
 
 
-def _with_progress(
+def with_progress(
     iterable: Iterable[Any],
     *,
     enabled: bool,
@@ -741,11 +742,7 @@ def _with_progress(
     return tqdm(iterable, desc=desc, total=total, dynamic_ncols=True, leave=False)
 
 
-def _safe_csv_float(value: float) -> float:
-    return value if math.isfinite(value) else float("nan")
-
-
-def _unpack_first_break_batch(batch: Any) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+def unpack_first_break_batch(batch: Any) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
     if isinstance(batch, (tuple, list)) and len(batch) == 3:
         x, y, target_pick = batch
         return x, y, target_pick
@@ -775,7 +772,7 @@ def train_one_epoch_first_break(
     n_batches = 0
     epoch_start = time.perf_counter()
     total_batches = len(loader) if hasattr(loader, "__len__") else None
-    train_iter = _with_progress(
+    train_iter = with_progress(
         loader,
         enabled=progress_bar,
         desc=f"epoch {epoch + 1} train",
@@ -783,7 +780,7 @@ def train_one_epoch_first_break(
     )
     for step, batch in enumerate(train_iter):
         step_start = time.perf_counter()
-        x, y, _ = _unpack_first_break_batch(batch)
+        x, y, _ = unpack_first_break_batch(batch)
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
 
@@ -865,14 +862,14 @@ def evaluate_first_break(
     n_batches = 0
     metric_sums: Dict[str, float] = {k: 0.0 for k in (metrics or {})}
     metric_counts: Dict[str, int] = {k: 0 for k in (metrics or {})}
-    eval_iter = _with_progress(
+    eval_iter = with_progress(
         loader,
         enabled=progress_bar,
         desc=desc,
         total=len(loader) if hasattr(loader, "__len__") else None,
     )
     for batch in eval_iter:
-        x, y, target_pick = _unpack_first_break_batch(batch)
+        x, y, target_pick = unpack_first_break_batch(batch)
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
         if target_pick is not None:
@@ -899,7 +896,7 @@ def evaluate_first_break(
     return losses, out_metrics
 
 
-def _write_final_test_metrics(
+def write_final_test_metrics(
     path: Path,
     *,
     best_epoch: int,
@@ -915,14 +912,14 @@ def _write_final_test_metrics(
         row = {
             "split": "test",
             "best_epoch": int(best_epoch),
-            "loss": _safe_csv_float(float(test_loss)),
+            "loss": _safe_value(float(test_loss)),
         }
         for name in metric_names:
-            row[name] = _safe_csv_float(float(metrics.get(name, float("nan"))))
+            row[name] = _safe_value(float(metrics.get(name, float("nan"))))
         writer.writerow(row)
 
 
-def _format_final_test_summary(
+def format_final_test_summary(
     *,
     best_epoch: int,
     test_loss: float,

@@ -37,9 +37,7 @@ class BaseMetric:
 
     higher_is_better: bool = True
 
-    def __call__(
-        self, pred: torch.Tensor, target: torch.Tensor, **kwargs: Any
-    ) -> float:
+    def __call__(self, pred: torch.Tensor, target: torch.Tensor) -> float:
         raise NotImplementedError
 
 
@@ -588,7 +586,7 @@ class IoUMetric(_BinaryMetric):
 
 
 @register_metric("pick_mae")
-class MeanAbsoluteError(_BinaryMetric):
+class PickMAE(_BinaryMetric):
     """Mean absolute first-break sample error over traces with a target pick."""
 
     higher_is_better = False
@@ -608,7 +606,7 @@ class MeanAbsoluteError(_BinaryMetric):
 
 
 @register_metric("pick_rmse")
-class RootMeanSquaredError(_BinaryMetric):
+class PickRMSE(_BinaryMetric):
     """Root mean squared first-break sample error over traces with a target pick."""
 
     higher_is_better = False
@@ -664,6 +662,11 @@ class GatherCoverage(_BinaryMetric):
         return float(pred_has[valid].float().mean().item())
 
 
+# Backward-compatible aliases used in existing first-break configs.
+METRIC_REGISTRY["MeanAbsoluteError"] = PickMAE
+METRIC_REGISTRY["RootMeanSquaredError"] = PickRMSE
+
+
 @register_metric("pick_within")
 class PickWithin(_BinaryMetric):
     """Fraction of target-pick traces picked within a sample tolerance."""
@@ -692,21 +695,12 @@ class PickWithin(_BinaryMetric):
         return float(hit.float().mean().item())
 
 
-_FB_METRICS: Dict[str, Type[_BinaryMetric]] = {
-    "dice": DiceMetric,
-    "f1": F1Metric,
-    "iou": IoUMetric,
-    "pick_mae": MeanAbsoluteError,
-    "MeanAbsoluteError": MeanAbsoluteError,
-    "RootMeanSquaredError": RootMeanSquaredError,
-    "MeanBiasError": MeanBiasError,
-    "GatherCoverage": GatherCoverage,
-    "pick_within": PickWithin,
-}
-
-
 def build_first_break_metrics(cfg_list: List[Dict[str, Any]]) -> "OrderedDict[str, Any]":
-    """Instantiate metrics from a list of ``{name, params}`` entries."""
+    """Instantiate first-break metrics from a list of ``{name, params}`` entries.
+
+    Supports convenience aliases ``pick_within_<N>`` and ``HitRate<N>px``,
+    which are rewritten to ``pick_within`` with ``tolerance=<N>``.
+    """
     metrics: "OrderedDict[str, Any]" = OrderedDict()
     for item in cfg_list:
         name = str(item["name"])
@@ -719,7 +713,10 @@ def build_first_break_metrics(cfg_list: List[Dict[str, Any]]) -> "OrderedDict[st
         if hit_rate_match is not None:
             metric_key = "pick_within"
             params.setdefault("tolerance", int(hit_rate_match.group(1)))
-        if metric_key not in _FB_METRICS:
-            raise ValueError(f"Unknown first-break metric {name!r}.")
-        metrics[name] = _FB_METRICS[metric_key](**params)
+        if metric_key not in METRIC_REGISTRY:
+            raise ValueError(
+                f"Unknown first-break metric {name!r}. "
+                f"Available: {sorted(METRIC_REGISTRY)}"
+            )
+        metrics[name] = METRIC_REGISTRY[metric_key](**params)
     return metrics

@@ -311,7 +311,7 @@ def plot_single_metric_curve(
     return fig
 
 
-def _plot_step_loss_curve(
+def plot_step_loss_curve(
     global_steps: list,
     losses: list,
     save_path: Union[str, Path],

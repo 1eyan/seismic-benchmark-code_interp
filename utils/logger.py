@@ -391,10 +391,10 @@ class StepLossLogger:
     def refresh_curves(self) -> None:
         if not self._dirty:
             return
-        from .visualization import _plot_step_loss_curve
+        from .visualization import plot_step_loss_curve
 
-        _plot_step_loss_curve(self._global_steps, self._losses, self._curve_path)
-        _plot_step_loss_curve(
+        plot_step_loss_curve(self._global_steps, self._losses, self._curve_path)
+        plot_step_loss_curve(
             self._global_steps,
             self._losses,
             self._curve_log_path,

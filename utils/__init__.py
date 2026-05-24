@@ -27,12 +27,11 @@ from .metrics import (
     register_metric,
 )
 from .train_utils import (
-    _format_final_test_summary,
-    _safe_csv_float,
-    _unpack_first_break_batch,
-    _with_progress,
-    _write_final_test_metrics,
     apply_denoise_experiment_name_from_model,
+    format_final_test_summary,
+    unpack_first_break_batch,
+    with_progress,
+    write_final_test_metrics,
     barrier_if_distributed,
     build_loaders,
     build_optimizer,
@@ -64,8 +63,8 @@ from .train_utils import (
     unwrap_ddp,
 )
 from .visualization import (
-    _plot_step_loss_curve,
     plot_loss_curve,
+    plot_step_loss_curve,
     plot_sample,
     plot_single_metric_curve,
     visualize_first_break_sample,
@@ -96,8 +95,8 @@ __all__ = [
     "compute_metrics",
     "register_metric",
     # visualization
-    "_plot_step_loss_curve",
     "plot_loss_curve",
+    "plot_step_loss_curve",
     "plot_single_metric_curve",
     "plot_sample",
     "visualize_first_break_sample",
@@ -106,12 +105,11 @@ __all__ = [
     "StepLossLogger",
     "TrainingLogger",
     # training utilities
-    "_format_final_test_summary",
-    "_safe_csv_float",
-    "_unpack_first_break_batch",
-    "_with_progress",
-    "_write_final_test_metrics",
     "apply_denoise_experiment_name_from_model",
+    "format_final_test_summary",
+    "unpack_first_break_batch",
+    "with_progress",
+    "write_final_test_metrics",
     "barrier_if_distributed",
     "build_loaders",
     "build_optimizer",
