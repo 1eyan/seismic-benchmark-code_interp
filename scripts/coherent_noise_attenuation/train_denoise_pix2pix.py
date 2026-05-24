@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -321,22 +322,31 @@ def main() -> None:
             y = y.to(device, non_blocking=True)
 
             # ---- Discriminator step -----------------------------------------
+            # Two forwards back-propagated via separate backward() calls
+            # inside no_sync() to avoid the BN running-stat version conflict
+            # that occurs when a single backward traverses both computation
+            # graphs.  Gradients accumulate locally; a manual all-reduce
+            # (AVG) replicates the DDP sync that was suppressed.
             d_optim.zero_grad(set_to_none=True)
 
-            # real
-            real_out = discriminator(x, y)
-            real_labels = torch.ones_like(real_out)
-            d_real_loss = bce_loss(real_out, real_labels)
+            with discriminator.no_sync():
+                # real
+                real_out = discriminator(x, y)
+                d_real_loss = bce_loss(real_out, torch.ones_like(real_out)) * 0.5
+                d_real_loss.backward()
 
-            # fake
-            with torch.no_grad():
-                fake_y = generator(x)
-            fake_out = discriminator(x, fake_y.detach())
-            fake_labels = torch.zeros_like(fake_out)
-            d_fake_loss = bce_loss(fake_out, fake_labels)
+                # fake
+                with torch.no_grad():
+                    fake_y = generator(x)
+                fake_out = discriminator(x, fake_y.detach())
+                d_fake_loss = bce_loss(fake_out, torch.zeros_like(fake_out)) * 0.5
+                d_fake_loss.backward()
 
-            d_loss = (d_real_loss + d_fake_loss) * 0.5
-            d_loss.backward()
+            if distributed:
+                for p in discriminator.parameters():
+                    if p.grad is not None:
+                        dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+
             if grad_clip is not None:
                 nn.utils.clip_grad_norm_(discriminator.parameters(), float(grad_clip))
             d_optim.step()
@@ -356,7 +366,7 @@ def main() -> None:
             g_optim.step()
 
             # accumulate
-            d_loss_sum += d_loss.item()
+            d_loss_sum += (d_real_loss.item() + d_fake_loss.item())
             g_gan_sum += g_gan_loss.item()
             g_l1_sum += g_l1_loss.item()
             g_total_sum += g_loss.item()
