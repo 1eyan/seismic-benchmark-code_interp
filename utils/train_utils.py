@@ -468,6 +468,7 @@ def evaluate(
     device: torch.device,
     *,
     metrics_on_denoised_signal: bool = False,
+    distributed: bool = False,
 ) -> Tuple[Dict[str, float], Dict[str, float]]:
     """Run evaluation; returns ``(loss_dict, metric_dict)``.
 
@@ -508,6 +509,21 @@ def evaluate(
             batch_metrics = compute_metrics(metrics, pred_m, targ_m)
             for k, v in batch_metrics.items():
                 metric_sums[k] += float(v)
+
+    # Aggregate across DDP ranks when each rank evaluates a different subset.
+    if distributed and torch.distributed.is_available() and torch.distributed.is_initialized():
+        ws = torch.distributed.get_world_size()
+        if ws > 1:
+            stat = torch.tensor(
+                [float(total_loss), float(n_batches)], device=device, dtype=torch.float64
+            )
+            torch.distributed.all_reduce(stat, op=torch.distributed.ReduceOp.SUM)
+            total_loss = float(stat[0].item())
+            n_batches = int(stat[1].item())
+            for k in list(metric_sums.keys()):
+                s = torch.tensor([float(metric_sums[k])], device=device, dtype=torch.float64)
+                torch.distributed.all_reduce(s, op=torch.distributed.ReduceOp.SUM)
+                metric_sums[k] = float(s[0].item())
 
     denom = max(n_batches, 1)
     losses = {"val": float(total_loss / denom)}
@@ -697,7 +713,19 @@ def build_shot_split_loaders(
         )
 
     train_loader = _make_dataloader(x_train, y_train, cfg, shuffle=True, sampler=train_sampler)
-    val_loader = _make_dataloader(x_val, y_val, cfg, shuffle=False)
+
+    # Validation loader: each rank evaluates a distinct subset to avoid
+    # redundant computation; metrics are aggregated in evaluate().
+    val_sampler: Optional[DistributedSampler] = None
+    if distributed:
+        val_sampler = DistributedSampler(
+            TensorDataset(x_val, y_val),
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            seed=sampler_seed,
+        )
+    val_loader = _make_dataloader(x_val, y_val, cfg, shuffle=False, sampler=val_sampler)
 
     if distributed and rank != 0:
         eval_train_loader: Optional[DataLoader] = None
