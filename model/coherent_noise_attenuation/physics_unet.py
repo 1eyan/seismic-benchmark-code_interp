@@ -30,7 +30,7 @@ class _AsymConvBlock(nn.Module):
         self.block = nn.Sequential(
             nn.Conv2d(in_ch, out_ch, kernel_size=kernel, padding=(kernel[0] // 2, kernel[1] // 2), bias=False),
             nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -126,7 +126,7 @@ class _PhysicsCNN(nn.Module):
             )
             if not is_last:
                 out_layers.append(nn.BatchNorm2d(oc))
-                out_layers.append(nn.ReLU(inplace=True))
+                out_layers.append(nn.ReLU(inplace=False))
             prev_out = oc
         self.output = nn.Sequential(*out_layers)
 
@@ -172,7 +172,7 @@ class FKClassifier(nn.Module):
         self.init_conv = nn.Sequential(
             nn.Conv2d(in_channels, base_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(base_channels),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
         )
 
         chs = [base_channels, base_channels * 2, base_channels * 4]  # 32, 64, 128
@@ -183,7 +183,7 @@ class FKClassifier(nn.Module):
                 nn.Sequential(
                     nn.Conv2d(prev, c, kernel_size=3, padding=1, bias=False),
                     nn.BatchNorm2d(c),
-                    nn.ReLU(inplace=True),
+                    nn.ReLU(inplace=False),
                     nn.MaxPool2d(kernel_size=2, stride=2),
                 )
             )
@@ -191,12 +191,16 @@ class FKClassifier(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
+        # Adaptive pooling collapses spatial dims to 1×1 so the FC input
+        # size is just `prev` regardless of input patch dimensions.
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+
         self.fc = nn.Sequential(
             nn.Flatten(),
             nn.Linear(prev, 256),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Linear(256, 64),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Linear(64, 1),
         )
 
@@ -206,6 +210,7 @@ class FKClassifier(nn.Module):
         for down in self.down_layers:
             h = down(h)
         h = self.dropout(h)
+        h = self.pool(h)
         return self.fc(h)
 
 

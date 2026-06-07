@@ -6,7 +6,7 @@
 set -euo pipefail
 
 # ---------- Configuration ----------
-CUDA_VISIBLE_DEVICES="0,1,2,3"
+CUDA_VISIBLE_DEVICES="4,5,6,7"
 NPROC_PER_NODE=4
 NOISE_LEVELS=(1.0 3.0 5.0 7.0 9.0)
 N_SEEDS=3

@@ -309,3 +309,116 @@ def plot_single_metric_curve(
     fig.savefig(out, dpi=120, bbox_inches="tight")
     plt.close(fig)
     return fig
+
+
+def plot_step_loss_curve(
+    global_steps: list,
+    losses: list,
+    save_path: Union[str, Path],
+    *,
+    log_y: bool = False,
+) -> None:
+    """Plot per-step training loss against global optimizer step."""
+    import matplotlib.pyplot as plt  # lazy
+
+    steps = np.asarray(global_steps, dtype=np.int64)
+    values = np.asarray(losses, dtype=np.float64)
+    valid = np.isfinite(values)
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    if steps.size > 0 and np.any(valid):
+        ax.plot(steps[valid], values[valid], linewidth=1.0, label="train_step")
+        ax.legend(loc="best")
+    else:
+        ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes)
+
+    if log_y:
+        ax.set_yscale("symlog", linthresh=1e-6)
+        ax.set_title("Step Loss (log scale)")
+    else:
+        ax.set_title("Step Loss")
+    ax.set_xlabel("global step")
+    ax.set_ylabel("loss")
+    ax.grid(True, alpha=0.3)
+    out = Path(save_path)
+    _ensure_parent(out)
+    fig.tight_layout()
+    fig.savefig(out, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+
+def visualize_first_break_sample(
+    model: torch.nn.Module,
+    loader: Any,
+    save_path: Union[str, Path],
+    device: Union[str, torch.device],
+    *,
+    title: str,
+    threshold: float = 0.5,
+    seed: Optional[int] = None,
+) -> None:
+    """Save input/probability/target/overlay diagnostic for one random patch."""
+    import matplotlib.pyplot as plt  # lazy
+
+    from tools.preprocessing import first_pick_from_mask
+
+    dataset = getattr(loader, "dataset", None)
+    if dataset is None or len(dataset) == 0:
+        raise ValueError("visualize_first_break_sample requires a non-empty dataset.")
+
+    rng = np.random.default_rng(seed)
+    idx = int(rng.integers(0, len(dataset)))
+    x, y, target_pick = dataset[idx]
+    sample_desc = ""
+    describe_ref = getattr(dataset, "describe_ref", None)
+    if callable(describe_ref):
+        sample_desc = " | " + str(describe_ref(idx))
+    x_batch = x.unsqueeze(0).to(device)
+
+    was_training = model.training
+    model.eval()
+    try:
+        with torch.no_grad():
+            prob = torch.sigmoid(model(x_batch))
+    finally:
+        if was_training:
+            model.train()
+
+    x2d = _squeeze_to_2d(x_batch, "input")
+    y2d = _squeeze_to_2d(y.unsqueeze(0), "target")
+    p2d = _squeeze_to_2d(prob, "prob")
+    v = _symmetric_clip(x2d)
+
+    target_pick_np = target_pick.detach().cpu().numpy()
+    target_valid = target_pick_np >= 0
+    valid_pixels = y2d >= 0
+    pred_pick, pred_valid = first_pick_from_mask(p2d, threshold=threshold, valid_mask=valid_pixels)
+    traces = np.arange(x2d.shape[0])
+
+    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+    panels = [
+        ("input", x2d, "gray", -v, v),
+        ("probability", p2d, "magma", 0.0, 1.0),
+        ("target", np.where(valid_pixels, y2d, np.nan), "gray", 0.0, 1.0),
+    ]
+    for ax, (name, arr, cmap, vmin, vmax) in zip(axes[:3], panels):
+        im = ax.imshow(arr.T, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto")
+        ax.set_title(name)
+        ax.set_xlabel("trace")
+        ax.set_ylabel("time")
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    axes[3].imshow(x2d.T, cmap="gray", vmin=-v, vmax=v, aspect="auto")
+    axes[3].plot(traces[target_valid], target_pick_np[target_valid], color="lime", linewidth=1.0, label="target")
+    axes[3].plot(traces[pred_valid], pred_pick[pred_valid], color="red", linewidth=1.0, label="pred")
+    axes[3].set_title("overlay")
+    axes[3].set_xlabel("trace")
+    axes[3].set_ylabel("time")
+    axes[3].legend(loc="upper right", fontsize=8)
+
+    fig.suptitle(f"{title} | sample idx={idx}{sample_desc}")
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    out = Path(save_path)
+    _ensure_parent(out)
+    fig.savefig(out, dpi=120, bbox_inches="tight")
+    plt.close(fig)

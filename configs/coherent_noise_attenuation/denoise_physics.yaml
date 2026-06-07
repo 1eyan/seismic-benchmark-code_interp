@@ -23,7 +23,7 @@ data:
     test: 1
 
   loader:
-    batch_size: 2          # physics model is memory-heavy (3 CNNs)
+    batch_size: 32          # physics model is memory-heavy (3 CNNs)
     num_workers: 4
     pin_memory: true
 
@@ -47,7 +47,7 @@ fk_classifier:
   base_channels: 32
   dropout: 0.5
   lr: 1.0e-4
-  epochs: 20
+  epochs: 50
   batch_size: 64
 
 physics_loss:

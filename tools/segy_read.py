@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+import warnings
 
 import numpy as np
 
@@ -157,6 +158,121 @@ def read_irregular_shots_by_header(
         "read_irregular_shots_by_header is a placeholder; implement when the "
         "first SEG_C3NA_ffid_*.sgy file is consumed."
     )
+
+
+# ----------------------------------------------------------------------
+# Trace-header introspection helpers
+# ----------------------------------------------------------------------
+
+
+def contiguous_ffid_blocks(ffids: np.ndarray, name: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Split a flat FFID array into contiguous blocks of repeated values.
+
+    Parameters
+    ----------
+    ffids : 1-D int array of ``FieldRecord`` values, one per trace.
+    name  : human label for the source file (used in error messages).
+
+    Returns
+    -------
+    values : ``(n_blocks,)`` int64 — unique FFID per block.
+    starts : ``(n_blocks,)`` int64 — first trace index of each block.
+    stops  : ``(n_blocks,)`` int64 — exclusive end index of each block.
+    """
+    if ffids.ndim != 1 or ffids.size == 0:
+        raise ValueError(f"{name}: FieldRecord array must be non-empty and 1-D.")
+    changes = np.flatnonzero(ffids[1:] != ffids[:-1]) + 1
+    starts = np.concatenate(([0], changes)).astype(np.int64)
+    stops = np.concatenate((changes, [ffids.size])).astype(np.int64)
+    values = ffids[starts].astype(np.int64)
+    if np.unique(values).size != values.size:
+        raise ValueError(
+            f"{name}: repeated non-contiguous FieldRecord values found. "
+            "This dataset expects each FFID gather to occupy one contiguous block."
+        )
+    return values, starts, stops
+
+
+def read_group_coordinates(segy_file: Any, name: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Read ``GroupX`` and ``GroupY`` trace headers as float64 arrays."""
+    try:
+        group_x = np.asarray(
+            segy_file.attributes(segyio.TraceField.GroupX)[:],
+            dtype=np.float64,
+        )
+        group_y = np.asarray(
+            segy_file.attributes(segyio.TraceField.GroupY)[:],
+            dtype=np.float64,
+        )
+    except Exception as exc:
+        raise ValueError(
+            f"{name}: GroupX/GroupY trace headers are required but could not be read."
+        ) from exc
+    if group_x.ndim != 1 or group_y.ndim != 1 or group_x.size != group_y.size:
+        raise ValueError(f"{name}: GroupX/GroupY headers must be matching 1-D arrays.")
+    return group_x, group_y
+
+
+def group_coordinates_are_usable(group_x: np.ndarray, group_y: np.ndarray) -> bool:
+    """Return ``True`` when neighbor distances have at least one finite positive value."""
+    distances = np.hypot(np.diff(group_x), np.diff(group_y))
+    return bool(np.any(np.isfinite(distances) & (distances > 0)))
+
+
+def read_line_id_header(
+    segy_file: Any,
+    name: str,
+    *,
+    header_name: str,
+) -> Optional[np.ndarray]:
+    """Read a named SEG-Y trace header field, with graceful fallback.
+
+    Parameters
+    ----------
+    segy_file   : open ``segyio`` file handle.
+    name        : human label for the source file.
+    header_name : a SEG-Y trace header name such as ``"INLINE_3D"``.
+
+    Returns
+    -------
+    1-D int64 array of header values, or ``None`` if the field is unavailable,
+    empty, or all zeros.
+    """
+    trace_field = getattr(segyio.TraceField, header_name, None)
+    if trace_field is None:
+        warnings.warn(
+            f"{name}: line_id_header={header_name!r} is not a known SEG-Y trace "
+            "header; inferring receiver lines from GroupX/GroupY geometry.",
+            RuntimeWarning,
+        )
+        return None
+    try:
+        line_ids = np.asarray(
+            segy_file.attributes(trace_field)[:],
+            dtype=np.int64,
+        )
+    except Exception:
+        warnings.warn(
+            f"{name}: line_id_header={header_name!r} is unavailable; inferring "
+            "receiver lines from GroupX/GroupY geometry.",
+            RuntimeWarning,
+        )
+        return None
+    if line_ids.ndim != 1 or line_ids.size == 0:
+        warnings.warn(
+            f"{name}: line_id_header={header_name!r} is empty or not 1-D; "
+            "inferring receiver lines from GroupX/GroupY geometry.",
+            RuntimeWarning,
+        )
+        return None
+    if not bool(np.any(line_ids != 0)):
+        warnings.warn(
+            f"{name}: line_id_header={header_name!r} is all zeros; inferring "
+            "receiver lines from GroupX/GroupY geometry.",
+            RuntimeWarning,
+        )
+        return None
+    return line_ids
 
 
 # ----------------------------------------------------------------------

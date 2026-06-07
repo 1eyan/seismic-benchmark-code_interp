@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -39,6 +40,7 @@ from tools.preprocessing import normalize  # noqa: E402
 from utils import (  # noqa: E402
     TrainingLogger,
     apply_denoise_experiment_name_from_model,
+    barrier_if_distributed,
     build_loaders,
     build_metrics,
     build_shot_split_loaders,
@@ -321,22 +323,31 @@ def main() -> None:
             y = y.to(device, non_blocking=True)
 
             # ---- Discriminator step -----------------------------------------
+            # Two forwards back-propagated via separate backward() calls
+            # inside no_sync() to avoid the BN running-stat version conflict
+            # that occurs when a single backward traverses both computation
+            # graphs.  Gradients accumulate locally; a manual all-reduce
+            # (AVG) replicates the DDP sync that was suppressed.
             d_optim.zero_grad(set_to_none=True)
 
-            # real
-            real_out = discriminator(x, y)
-            real_labels = torch.ones_like(real_out)
-            d_real_loss = bce_loss(real_out, real_labels)
+            with discriminator.no_sync():
+                # real
+                real_out = discriminator(x, y)
+                d_real_loss = bce_loss(real_out, torch.ones_like(real_out)) * 0.5
+                d_real_loss.backward()
 
-            # fake
-            with torch.no_grad():
-                fake_y = generator(x)
-            fake_out = discriminator(x, fake_y.detach())
-            fake_labels = torch.zeros_like(fake_out)
-            d_fake_loss = bce_loss(fake_out, fake_labels)
+                # fake
+                with torch.no_grad():
+                    fake_y = generator(x)
+                fake_out = discriminator(x, fake_y.detach())
+                d_fake_loss = bce_loss(fake_out, torch.zeros_like(fake_out)) * 0.5
+                d_fake_loss.backward()
 
-            d_loss = (d_real_loss + d_fake_loss) * 0.5
-            d_loss.backward()
+            if distributed:
+                for p in discriminator.parameters():
+                    if p.grad is not None:
+                        dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+
             if grad_clip is not None:
                 nn.utils.clip_grad_norm_(discriminator.parameters(), float(grad_clip))
             d_optim.step()
@@ -356,7 +367,7 @@ def main() -> None:
             g_optim.step()
 
             # accumulate
-            d_loss_sum += d_loss.item()
+            d_loss_sum += (d_real_loss.item() + d_fake_loss.item())
             g_gan_sum += g_gan_loss.item()
             g_l1_sum += g_l1_loss.item()
             g_total_sum += g_loss.item()
@@ -371,14 +382,14 @@ def main() -> None:
         g_scheduler.step()
         d_scheduler.step()
 
-        # --- evaluation (G only, rank 0) ------------------------------------
+        # --- evaluation (G only, all ranks participate, DDP aggregation) ----
         val_losses: Dict[str, float] = {"val": float("nan")}
         val_metrics: Dict[str, float] = {}
         train_metrics: Dict[str, float] = {n: float("nan") for n in metric_names}
 
-        if eval_train_loader is not None:
-            # Use MSE for the "val_loss" in checkpoint selection
-            mse_for_ckpt = build_metrics([{"name": "mse", "params": {}}])
+        # Training metrics: rank 0 only (acceptable for monitoring; barrier
+        # below keeps other ranks from drifting ahead).
+        if rank == 0 and eval_train_loader is not None:
             _, train_metrics = evaluate(
                 model=generator,
                 loader=eval_train_loader,
@@ -387,35 +398,38 @@ def main() -> None:
                 device=device,
                 metrics_on_denoised_signal=True,
             )
-            if (epoch + 1) % eval_interval == 0:
-                ckpt_losses, val_metrics = evaluate(
-                    model=generator,
-                    loader=val_loader,
-                    loss_fn=nn.MSELoss().to(device),
-                    metrics=metrics,
-                    device=device,
-                    metrics_on_denoised_signal=True,
-                )
-                val_losses["val"] = ckpt_losses["val"]
 
-                # best checkpoint by validation MSE
-                if rank == 0 and val_losses["val"] < best_val_loss:
-                    best_val_loss = val_losses["val"]
-                    _save_pix2pix_checkpoint(
-                        exp_dir / "checkpoints" / "best.pt",
-                        generator=generator,
-                        discriminator=discriminator,
-                        g_optim=g_optim,
-                        d_optim=d_optim,
-                        g_scheduler=g_scheduler,
-                        d_scheduler=d_scheduler,
-                        epoch=epoch,
-                        extras={"config": cfg},
+        # Validation: every rank evaluates on its split of val_loader; results
+        # are aggregated via all_reduce so no single rank becomes a bottleneck.
+        if (epoch + 1) % eval_interval == 0:
+            val_losses, val_metrics = evaluate(
+                model=generator,
+                loader=val_loader,
+                loss_fn=nn.MSELoss().to(device),
+                metrics=metrics,
+                device=device,
+                metrics_on_denoised_signal=True,
+                distributed=distributed,
+            )
+
+            # best checkpoint by validation MSE (rank 0 only)
+            if rank == 0 and val_losses["val"] < best_val_loss:
+                best_val_loss = val_losses["val"]
+                _save_pix2pix_checkpoint(
+                    exp_dir / "checkpoints" / "best.pt",
+                    generator=generator,
+                    discriminator=discriminator,
+                    g_optim=g_optim,
+                    d_optim=d_optim,
+                    g_scheduler=g_scheduler,
+                    d_scheduler=d_scheduler,
+                    epoch=epoch,
+                    extras={"config": cfg},
+                )
+                if logger is not None:
+                    logger.info(
+                        f"Best checkpoint saved (val_loss={best_val_loss:.6f})"
                     )
-                    if logger is not None:
-                        logger.info(
-                            f"Best checkpoint saved (val_loss={best_val_loss:.6f})"
-                        )
 
         # --- logging --------------------------------------------------------
         metric_row: Dict[str, float] = {}
@@ -461,6 +475,10 @@ def main() -> None:
                 title=f"Pix2Pix {g_type} epoch {epoch}",
                 seed=None,
             )
+
+        # Ensure all ranks finish the epoch before the next one begins,
+        # preventing rank skew that can cause NCCL collective timeouts.
+        barrier_if_distributed()
 
     elapsed = time.time() - start_time
     if logger is not None:

@@ -6,7 +6,7 @@ See ``utils/README.md`` for the registry workflow (how to add a new dataset).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Type
 
 import numpy as np
 import torch
@@ -175,3 +175,113 @@ def build_dataloader(split_cfg: Dict[str, Any]) -> DataLoader:
     dataset = build_dataset(split_cfg)
     loader_cfg = split_cfg.get("loader", {})
     return DataLoader(dataset, **loader_cfg)
+
+
+def as_path(root: Path, value: str) -> Path:
+    """Return ``value`` as absolute if it is already, else relative to ``root``."""
+    path = Path(value)
+    return path if path.is_absolute() else root / path
+
+
+def split_block_indices(
+    n_blocks: int,
+    split_cfg: Mapping[str, Any],
+    *,
+    seed: int,
+    block_id_offset: int = 0,
+) -> Dict[str, np.ndarray]:
+    """Split ``n_blocks`` into train/val/test index arrays from a config dict.
+
+    Parameters
+    ----------
+    n_blocks         : total number of blocks to split.
+    split_cfg        : mapping with keys ``train``, ``val``, ``test`` (ratios)
+                       and an optional ``shuffle`` (bool, default ``True``).
+    seed             : RNG seed for shuffling.
+    block_id_offset  : added to the seed per-call so different pipelines use
+                       distinct shuffles.
+
+    Returns
+    -------
+    Dictionary mapping ``"train"`` / ``"val"`` / ``"test"`` to int64 index arrays.
+    """
+    if n_blocks < 3:
+        raise ValueError(
+            f"Need at least 3 blocks for train/val/test split, got {n_blocks}."
+        )
+
+    ratios = {
+        "train": float(split_cfg.get("train", 0.8)),
+        "val": float(split_cfg.get("val", 0.1)),
+        "test": float(split_cfg.get("test", 0.1)),
+    }
+    total = sum(ratios.values())
+    if total <= 0:
+        raise ValueError(f"Split ratios must sum to a positive value, got {ratios}.")
+    ratios = {k: v / total for k, v in ratios.items()}
+
+    indices = np.arange(n_blocks, dtype=np.int64)
+    if bool(split_cfg.get("shuffle", split_cfg.get("shuffle_ffids", True))):
+        rng = np.random.default_rng(seed + block_id_offset * 1009)
+        rng.shuffle(indices)
+
+    n_val = max(1, int(round(n_blocks * ratios["val"])))
+    n_test = max(1, int(round(n_blocks * ratios["test"])))
+    n_train = n_blocks - n_val - n_test
+    while n_train < 1:
+        if n_val >= n_test and n_val > 1:
+            n_val -= 1
+        elif n_test > 1:
+            n_test -= 1
+        else:
+            raise ValueError(f"Cannot split {n_blocks} blocks into non-empty splits.")
+        n_train = n_blocks - n_val - n_test
+
+    return {
+        "train": indices[:n_train],
+        "val": indices[n_train:n_train + n_val],
+        "test": indices[n_train + n_val:n_train + n_val + n_test],
+    }
+
+
+def cap_split_samples(
+    samples_by_split: Dict[str, List[Any]],
+    cap_cfg: Any,
+    *,
+    seed: int,
+) -> Dict[str, List[Any]]:
+    """Randomly subsample each split's list to a configurable maximum size.
+
+    Parameters
+    ----------
+    samples_by_split : dict mapping split name to a list of samples.
+    cap_cfg          : int (same cap for every split) or dict ``{split: cap}``.
+                       ``None`` or 0 or negative means keep all.
+    seed             : RNG seed.
+
+    Returns
+    -------
+    New dict with the same keys; lists are trimmed in place of the originals.
+    """
+    if cap_cfg is None:
+        return samples_by_split
+
+    if isinstance(cap_cfg, Mapping):
+        caps = {k: cap_cfg.get(k) for k in samples_by_split}
+    else:
+        caps = {k: cap_cfg for k in samples_by_split}
+
+    out: Dict[str, List[Any]] = {}
+    rng = np.random.default_rng(seed)
+    for split, refs in samples_by_split.items():
+        cap_raw = caps.get(split)
+        if cap_raw is None:
+            out[split] = refs
+            continue
+        cap = int(cap_raw)
+        if cap <= 0 or len(refs) <= cap:
+            out[split] = refs
+            continue
+        keep = np.sort(rng.choice(len(refs), size=cap, replace=False))
+        out[split] = [refs[int(i)] for i in keep]
+    return out
