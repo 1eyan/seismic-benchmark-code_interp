@@ -3,12 +3,16 @@
 Inputs accept ``(n_traces, n_time)`` or ``(n_shots, n_traces, n_time)``.
 Output ndim is selectable: ``3`` -> ``(P, h, w)``; ``4`` -> ``(P, 1, h, w)``,
 with ``P = n_shots * n_per_shot``. Only the uniform mode is invertible.
+
+Also provides :func:`trace_time_chunk` / :func:`trace_time_unchunk` for
+Transformer models that operate on time-axis token sequences.
+
 See ``tools/README.md`` for the per-function summary.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
@@ -23,6 +27,8 @@ __all__ = [
     "patchify_uniform",
     "patchify_random",
     "unpatchify_uniform",
+    "trace_time_chunk",
+    "trace_time_unchunk",
 ]
 
 
@@ -286,3 +292,140 @@ def patchify_random(
         "mode": "random",
     }
     return _maybe_add_channel(patches, output_ndim), info
+
+
+# ----------------------------------------------------------------------
+# 4. Trace-time chunking for Transformer models
+# ----------------------------------------------------------------------
+
+def trace_time_chunk(
+    x: np.ndarray,
+    coords: np.ndarray,
+    chunk_length: int,
+    overlap_ratio: float = 0.0,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+    """Split each trace along the time axis into overlapping/non-overlapping chunks.
+
+    Unlike :func:`patchify_uniform` which operates on the spatial plane, this
+    function cuts along the **time** axis to produce token sequences for
+    Transformer models.  Each token has shape ``(chunk_length,)`` and the
+    sequence length is ``n_traces * n_chunks``.
+
+    Parameters
+    ----------
+    x            : ``(n_shots, n_traces, time_length)`` seismic data.
+    coords       : ``(n_shots, n_traces, 4)`` spatial coordinates.
+    chunk_length : time samples per chunk.
+    overlap_ratio: fraction in ``[0, 1)``; 0 means no overlap.
+
+    Returns
+    -------
+    x_chunked     : ``(n_shots, n_traces * n_chunks, chunk_length)``
+    coords_chunked: ``(n_shots, n_traces * n_chunks, 4)``
+    time_bounds   : ``(n_shots, n_traces * n_chunks, 2)`` — ``[start, end]``
+                    indices (inclusive).
+    chunk_info    : dict consumed by :func:`trace_time_unchunk`.
+    """
+    if not 0.0 <= overlap_ratio < 1.0:
+        raise ValueError(f"overlap_ratio must be in [0, 1), got {overlap_ratio}.")
+    if x.ndim != 3:
+        raise ValueError(f"x must be 3-D (n_shots, n_traces, time_length); got ndim={x.ndim}.")
+    if chunk_length <= 0:
+        raise ValueError(f"chunk_length must be positive, got {chunk_length}.")
+
+    B, N_trace, T_time = x.shape
+    step = max(1, int(chunk_length * (1.0 - overlap_ratio)))
+    n_chunks = max(1, (T_time - chunk_length) // step + 1)
+
+    chunks_list: List[np.ndarray] = []
+    coords_list: List[np.ndarray] = []
+    bounds_list: List[np.ndarray] = []
+
+    last_end = -1
+    for c in range(n_chunks):
+        start = c * step
+        end = start + chunk_length
+        if end > T_time:
+            end = T_time
+            start = max(0, end - chunk_length)
+        chunk = x[:, :, start:end]
+        if chunk.shape[2] < chunk_length:
+            pad_width = chunk_length - chunk.shape[2]
+            chunk = np.pad(chunk, ((0, 0), (0, 0), (0, pad_width)))
+        chunks_list.append(chunk)
+        coords_list.append(coords)
+        bounds = np.zeros((B, N_trace, 2), dtype=np.float32)
+        bounds[:, :, 0] = start
+        bounds[:, :, 1] = end - 1
+        bounds_list.append(bounds)
+        last_end = end
+
+    if last_end < T_time:
+        start = max(0, T_time - chunk_length)
+        end = T_time
+        chunk = x[:, :, start:end]
+        if chunk.shape[2] < chunk_length:
+            pad_width = chunk_length - chunk.shape[2]
+            chunk = np.pad(chunk, ((0, 0), (0, 0), (0, pad_width)))
+        chunks_list.append(chunk)
+        coords_list.append(coords)
+        bounds = np.zeros((B, N_trace, 2), dtype=np.float32)
+        bounds[:, :, 0] = start
+        bounds[:, :, 1] = end - 1
+        bounds_list.append(bounds)
+        n_chunks += 1
+
+    x_chunked = np.concatenate(chunks_list, axis=1)
+    coords_chunked = np.concatenate(coords_list, axis=1)
+    time_bounds = np.concatenate(bounds_list, axis=1)
+
+    chunk_info: Dict[str, Any] = {
+        "n_chunks": n_chunks,
+        "step": step,
+        "chunk_length": chunk_length,
+        "n_traces": N_trace,
+        "time_length": T_time,
+    }
+    return x_chunked, coords_chunked, time_bounds, chunk_info
+
+
+def trace_time_unchunk(
+    x_chunked: np.ndarray,
+    chunk_info: Dict[str, Any],
+    overlap_ratio: float = 0.0,
+) -> np.ndarray:
+    """Reconstruct from :func:`trace_time_chunk`; overlapping regions are averaged.
+
+    Parameters
+    ----------
+    x_chunked  : ``(n_shots, n_traces * n_chunks, chunk_length)``
+    chunk_info : dict returned by :func:`trace_time_chunk`
+
+    Returns
+    -------
+    x : ``(n_shots, n_traces, time_length)``
+    """
+    B, tokens, chunk_len = x_chunked.shape
+    n_chunks = chunk_info["n_chunks"]
+    step = chunk_info["step"]
+    n_traces = chunk_info["n_traces"]
+    T_time = chunk_info["time_length"]
+
+    out = np.zeros((B, n_traces, T_time), dtype=x_chunked.dtype)
+    count = np.zeros((B, n_traces, T_time), dtype=np.float32)
+
+    for c in range(n_chunks):
+        start = c * step
+        end = start + chunk_len
+        if end > T_time:
+            end = T_time
+            start = max(0, end - chunk_len)
+        seg_len = end - start
+        idx = c * n_traces
+        seg = x_chunked[:, idx: idx + n_traces, :seg_len]
+        out[:, :, start:end] += seg
+        count[:, :, start:end] += 1.0
+
+    count = np.maximum(count, 1.0)
+    out = out / count
+    return out

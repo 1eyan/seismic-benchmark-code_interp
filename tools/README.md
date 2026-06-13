@@ -28,6 +28,10 @@ Generic utilities and helpers reused across the project. No training pipelines a
   - `patchify_random(data, patch_size, n_patches, output_ndim=3, rng=None)` — `n_patches` **per shot** of independently sampled starts; start positions recorded in `info`. No inverse.
   - `unpatchify_uniform(patches, info)` — inverse of `patchify_uniform`; overlaps are averaged (`sum/count`); accepts 3D or 4D patches; raises on `info` from `patchify_random`.
 
+- `patching.py` (cont.) — time-axis chunking for Transformer models:
+  - `trace_time_chunk(x, coords, chunk_length, overlap_ratio=0.0)` — splits each trace along the time axis into overlapping/non-overlapping chunks for Transformer token sequences. Input: `(n_shots, n_traces, time_length)`. Returns `(x_chunked, coords_chunked, time_bounds, chunk_info)`.
+  - `trace_time_unchunk(x_chunked, chunk_info)` — inverse of `trace_time_chunk`; overlapping regions are averaged. Restores `(n_shots, n_traces, time_length)`.
+
 - `_array_utils.py` — internal helpers (`as_3d`, `restore`, `as_generator`, `RNGLike`) shared by `preprocessing.py` and `patching.py`. Not part of the public API.
 
 ## Planned contents

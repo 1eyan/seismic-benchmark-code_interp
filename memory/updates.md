@@ -524,3 +524,22 @@
 - Impact: Benchmark task description is now specific and technically accurate. Batch evaluation is a single command: `python scripts/coherent_noise_attenuation/batch_evaluate.py --root_dir <results_dir> --output <output.xlsx>`.
 
 - Follow-up: Add a standalone inference script (`inference_denoise.py`) if per-shot visualization or original-amplitude-domain metrics are needed for individual checkpoints.
+
+## 2026-06-11 — Integrate Transformer models into interpolation pipeline
+
+- Context: Four Transformer variants (V9, V9 EncDec, V11, V11 EncDec) existed in `model/interpolation/` but were not registered with the model registry and had no training/inference scripts. The Transformer models use a different data pipeline (trace-time tokenization) and forward interface (`model(x, coords, time_bounds, mask)`) compared to the UNet (`model(x)`).
+- Change:
+  - `tools/patching.py` — added `trace_time_chunk` and `trace_time_unchunk` as shared numpy utilities (pure numpy, extracted from `gated_transformer_v11.py` PyTorch implementation). `__all__` and module docstring updated.
+  - `tools/README.md` — documented the two new functions.
+  - `model/interpolation/gated_transformer_v9.py` — registered `create_gated_model_v9` in `MODEL_REGISTRY["gated_transformer_v9"]`.
+  - `model/interpolation/gated_transformer_v9_encdec.py` — registered `create_gated_model_v9_encdec` in `MODEL_REGISTRY["gated_transformer_v9_encdec"]`.
+  - `model/interpolation/gated_transformer_v11.py` — registered `create_gated_model_v11` in `MODEL_REGISTRY["gated_transformer_v11"]`.
+  - `model/interpolation/gated_transformer_v11_encdec.py` — registered `create_gated_model_v11_encdec` in `MODEL_REGISTRY["gated_transformer_v11_encdec"]`.
+  - `model/interpolation/__init__.py` — added imports for all four Transformer modules.
+  - `scripts/interpolation/train_interpolation_transformer.py` (new) — dedicated training script with `InterpolationTokenDataset`, custom `train_one_epoch_transformer` / `evaluate_transformer` loops (multi-argument forward), coordinate extraction from SEG-Y headers, and `trace_time_chunk`/`trace_time_unchunk` data pipeline.
+  - `scripts/interpolation/inference_interpolation_transformer.py` (new) — inference script with `inference_on_shots_transformer` for full-shot reconstruction via chunk/unchunk. Supports per-shot metrics, CSV/JSON output, `.npy` export, and visualization.
+  - `configs/interpolation/interpolation_transformer.yaml` (new) — default config for V11 EncDec with commented alternatives for all four variants.
+  - `scripts/interpolation/train_interpolation_transformer.sh` (new) — multi-seed training launcher.
+  - `scripts/interpolation/inference_interpolation_transformer.sh` (new) — inference launcher.
+- Impact: Transformer models can now be used for interpolation via YAML (`model.type: gated_transformer_v11_encdec` etc.) with dedicated training and inference scripts. Factory functions are registered directly in `MODEL_REGISTRY` (not via `@register_model` decorator) since they are functions, not classes.
+- Follow-up: Consider adding mixed-precision training or learning rate warmup if Transformer convergence is slow.

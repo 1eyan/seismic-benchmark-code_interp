@@ -12,6 +12,10 @@ from . import dncnn  # noqa: F401
 from . import res_unet  # noqa: F401
 from . import unet  # noqa: F401
 from . import unet_plusplus  # noqa: F401
+from . import gated_transformer_v9  # noqa: F401
+from . import gated_transformer_v9_encdec  # noqa: F401
+from . import gated_transformer_v11  # noqa: F401
+from . import gated_transformer_v11_encdec  # noqa: F401
 
 __all__ = [
     "MODEL_REGISTRY",
