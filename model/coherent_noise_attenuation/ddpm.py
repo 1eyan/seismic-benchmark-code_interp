@@ -1,4 +1,4 @@
-"""Conditional DDPM (DDPM-2c) U-Net backbone + noise scheduler for ground-roll attenuation.
+"""Conditional DDPM (cDDPM-2c) U-Net backbone + noise scheduler for ground-roll attenuation.
 
 The model jointly predicts the noise added to both signal and ground-roll components.
 Input : concat(y, x_t, z_t) → 3 channels (condition, noised signal, noised ground-roll)
@@ -157,11 +157,11 @@ class _Upsample(nn.Module):
 
 @register_model("ddpm_unet")
 class DDPMUNet(nn.Module):
-    """Modified U-Net for DDPM-2c ground-roll attenuation.
+    """Modified U-Net for cDDPM-2c ground-roll attenuation.
 
     Parameters
     ----------
-    in_channels : input channels (3 = noisy + noised_signal + noised_gr).
+    in_channels : input channels (3 = condition + noised_signal + noised_gr).
     out_channels : output channels (2 = eps_signal, eps_groundroll).
     base_channels : first-level channel count.
     channel_mults : multipliers per resolution level (len = num levels).
@@ -245,7 +245,7 @@ class DDPMUNet(nn.Module):
 
         Parameters
         ----------
-        x : (B, 3, H, W) — concatenated [noisy, x_t, z_t].
+        x : (B, 3, H, W) — concatenated [y, x_t, z_t].
         t : (B,) or (B, 1) — diffusion timestep integers.
 
         Returns
@@ -372,7 +372,7 @@ class DDPMNoiseScheduler:
         z_t = a_bar.sqrt() * z_0 + (1.0 - a_bar).sqrt() * eps_gr
         return x_t, z_t
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def sample_prev_step(
         self,
         model: nn.Module,
@@ -420,21 +420,26 @@ class DDPMNoiseScheduler:
 
         return x_prev, z_prev
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def sample_full(
         self,
         model: nn.Module,
         y: torch.Tensor,
         num_steps: Optional[int] = None,
+        use_ddim: bool = True,
+        ddim_eta: float = 0.0,
         progress: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Full DDPM reverse chain: pure noise → (x_0, z_0).
+        """Full DDPM/DDIM reverse chain: pure noise → (x_0, z_0).
 
         Parameters
         ----------
         model     : trained DDPMUNet.
         y         : (B, 1, H, W) condition (noisy input).
-        num_steps : override T (None = full 1000).
+        num_steps : number of steps for accelerated sampling (None = full num_timesteps).
+                    Steps are evenly spaced across the full schedule.
+        use_ddim  : use DDIM sampling when num_steps is set (default True).
+        ddim_eta  : DDIM stochasticity (0 = deterministic, 1 = DDPM-like).
         progress  : print progress every 100 steps.
 
         Returns
@@ -442,20 +447,90 @@ class DDPMNoiseScheduler:
         x_0, z_0 : (B, 1, H, W) each — denoised signal and ground-roll.
         """
         device = next(model.parameters()).device
-        max_t = self.num_timesteps if num_steps is None else int(num_steps)
         B, _, H, W = y.shape
 
         x_t = torch.randn(B, 1, H, W, device=device)
         z_t = torch.randn(B, 1, H, W, device=device)
 
-        ts = list(range(max_t - 1, -1, -1))
-        for i, t_val in enumerate(ts):
-            t = torch.full((B,), t_val, device=device, dtype=torch.long)
-            x_t, z_t = self.sample_prev_step(model, y, x_t, z_t, t)
+        if num_steps is None:
+            ts = list(range(self.num_timesteps - 1, -1, -1))
+        else:
+            step = max(1, self.num_timesteps // int(num_steps))
+            ts = list(range(self.num_timesteps - 1, -1, -step))
+
+        total_steps = len(ts)
+        for i in range(len(ts)):
+            t_curr = ts[i]
+            t_prev = ts[i + 1] if i + 1 < len(ts) else 0
+
+            if use_ddim and num_steps is not None:
+                x_t, z_t = self._sample_ddim_step(model, y, x_t, z_t, t_curr, t_prev, ddim_eta)
+            else:
+                t = torch.full((B,), t_curr, device=device, dtype=torch.long)
+                x_t, z_t = self.sample_prev_step(model, y, x_t, z_t, t)
+
             if progress and (i + 1) % 100 == 0:
-                print(f"  DDPM sampling step {i + 1}/{max_t}")
+                print(f"  DDPM sampling step {i + 1}/{total_steps}")
 
         return x_t, z_t
+
+    @torch.inference_mode()
+    def _sample_ddim_step(
+        self,
+        model: nn.Module,
+        y: torch.Tensor,
+        x_t: torch.Tensor,
+        z_t: torch.Tensor,
+        t_curr: int,
+        t_prev: int,
+        eta: float = 0.0,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Single DDIM step: (x_t, z_t) at t_curr → (x_{t_prev}, z_{t_prev}).
+
+        Uses the non-Markovian DDIM update (Song et al., 2021) for
+        accelerated sampling with strided timesteps.
+        """
+        device = x_t.device
+        B = x_t.shape[0]
+
+        # model forward
+        t = torch.full((B,), t_curr, device=device, dtype=torch.long)
+        inp = torch.cat([y, x_t, z_t], dim=1)
+        eps_pred = model(inp, t)
+        eps_sig_pred = eps_pred[:, :1, :, :]
+        eps_gr_pred = eps_pred[:, 1:, :, :]
+
+        # cumulative alphas
+        a_curr = self._alphas_cumprod[t_curr].to(device)
+        a_prev = self._alphas_cumprod[t_prev].to(device)
+        while a_curr.dim() < x_t.dim():
+            a_curr = a_curr.unsqueeze(-1)
+            a_prev = a_prev.unsqueeze(-1)
+
+        # predicted x_0 and z_0
+        x_0_pred = (x_t - (1.0 - a_curr).sqrt() * eps_sig_pred) / a_curr.sqrt().clamp(min=1e-8)
+        z_0_pred = (z_t - (1.0 - a_curr).sqrt() * eps_gr_pred) / a_curr.sqrt().clamp(min=1e-8)
+
+        # sigma_t (DDIM stochasticity)
+        if eta > 0:
+            sigma = eta * ((1.0 - a_prev) / (1.0 - a_curr).clamp(min=1e-8)).sqrt() * (
+                1.0 - a_curr / a_prev.clamp(min=1e-8)
+            ).sqrt().clamp(min=0.0)
+        else:
+            sigma = torch.zeros_like(a_curr)
+
+        # direction pointing to x_t: sqrt(1 - a_prev - sigma^2)
+        coeff_dir = (1.0 - a_prev - sigma ** 2).clamp(min=0.0).sqrt()
+
+        # DDIM update
+        x_prev = a_prev.sqrt() * x_0_pred + coeff_dir * eps_sig_pred
+        z_prev = a_prev.sqrt() * z_0_pred + coeff_dir * eps_gr_pred
+
+        if eta > 0:
+            x_prev = x_prev + sigma * torch.randn_like(x_t)
+            z_prev = z_prev + sigma * torch.randn_like(z_t)
+
+        return x_prev, z_prev
 
     def state_dict(self) -> Dict[str, torch.Tensor]:
         """Serialize precomputed tensors for checkpointing."""

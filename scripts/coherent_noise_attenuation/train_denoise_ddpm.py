@@ -1,4 +1,4 @@
-"""Conditional DDPM (DDPM-2c) for ground-roll attenuation (DDP via ``torchrun``).
+"""Conditional DDPM (cDDPM-2c) for ground-roll attenuation (DDP via ``torchrun``).
 
 CUDA_VISIBLE_DEVICES=6,7 torchrun --nproc_per_node=2 \\
     scripts/coherent_noise_attenuation/train_denoise_ddpm.py \\
@@ -8,6 +8,7 @@ CUDA_VISIBLE_DEVICES=6,7 torchrun --nproc_per_node=2 \\
 from __future__ import annotations
 
 import argparse
+import datetime
 import sys
 import time
 from pathlib import Path
@@ -43,7 +44,6 @@ from utils import (  # noqa: E402
     build_shot_split_loaders,
     default_config_relpath_for_train_script,
     destroy_distributed,
-    init_distributed,
     load_config,
     sampler_set_epoch,
     set_seed,
@@ -51,7 +51,37 @@ from utils import (  # noqa: E402
     training_device,
     unwrap_ddp,
     visualize_random_sample,
+    plot_sample,
 )
+
+
+# ---------------------------------------------------------------------------
+# DDPM-local distributed init with a long timeout (DDIM evaluation is slow)
+# ---------------------------------------------------------------------------
+
+def _init_distributed_ddpm(backend=None, timeout=7200):
+    """Like ``utils.init_distributed`` but with a longer process-group timeout."""
+    import os
+
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    if world_size <= 1:
+        return False, 0, 0, 1
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    if backend is None:
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+    td = datetime.timedelta(seconds=int(timeout))
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+        device = torch.device("cuda", local_rank)
+        torch.distributed.init_process_group(
+            backend=backend, init_method="env://", device_id=device, timeout=td,
+        )
+    else:
+        torch.distributed.init_process_group(
+            backend=backend, init_method="env://", timeout=td,
+        )
+    return True, rank, local_rank, world_size
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +173,7 @@ def _build_denoise_patch_pairs(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndar
 # DDPM evaluation
 # ---------------------------------------------------------------------------
 
-@torch.no_grad()
+@torch.inference_mode()
 def _evaluate_ddpm(
     model: nn.Module,
     loader: torch.utils.data.DataLoader,
@@ -151,12 +181,18 @@ def _evaluate_ddpm(
     metrics: Dict[str, Any],
     device: torch.device,
     sample_steps: int = 10,
+    use_ddim: bool = True,
+    ddim_eta: float = 0.0,
+    distributed: bool = False,
 ) -> Tuple[Dict[str, float], Dict[str, float]]:
-    """Evaluate DDPM on a dataloader (few-step sampling for monitoring)."""
+    """Evaluate DDPM on a dataloader (few-step DDIM sampling for monitoring).
+
+    When ``distributed=True``, each rank processes its own data shard and
+    results are all-reduced so every rank sees the global averages.
+    """
     model.eval()
     metric_sums: Dict[str, float] = {}
     mse_sum = 0.0
-    n_batches = 0
     n_total = 0
 
     for x, y in loader:
@@ -167,16 +203,11 @@ def _evaluate_ddpm(
         # x = noisy input (condition), y = noise label (ground-roll z_0)
         # x_0 = clean signal = noisy - noise
         x_0_true = x - y
-        z_0_true = y
 
-        # DDPM sampling
-        try:
-            x_0_pred, _ = scheduler.sample_full(
-                model, x, num_steps=sample_steps, progress=False
-            )
-        except Exception:
-            # fallback: return NaN metrics
-            return {"val": float("nan")}, {n: float("nan") for n in metrics}
+        # DDIM (or DDPM) sampling
+        x_0_pred, _ = scheduler.sample_full(
+            model, x, num_steps=sample_steps, use_ddim=use_ddim, ddim_eta=ddim_eta, progress=False
+        )
 
         # Compute MSE on clean signal
         mse_batch = F.mse_loss(x_0_pred, x_0_true)
@@ -190,11 +221,163 @@ def _evaluate_ddpm(
         batch_metrics = compute_metrics(metrics, pred_m, targ_m)
         for k, v in batch_metrics.items():
             metric_sums[k] = metric_sums.get(k, 0.0) + v * B
-        n_batches += 1
+
+    # all-reduce partial sums across ranks
+    if distributed:
+        metric_keys = sorted(metric_sums.keys())
+        stat = torch.tensor(
+            [mse_sum, float(n_total)] + [metric_sums[k] for k in metric_keys],
+            device=device, dtype=torch.float64,
+        )
+        torch.distributed.all_reduce(stat, op=torch.distributed.ReduceOp.SUM)
+        mse_sum = float(stat[0].item())
+        n_total = int(stat[1].item())
+        for i, k in enumerate(metric_keys):
+            metric_sums[k] = float(stat[2 + i].item())
 
     val_loss = mse_sum / max(n_total, 1)
     out_metrics = {k: v / max(n_total, 1) for k, v in metric_sums.items()}
     return {"val": val_loss}, out_metrics
+
+
+# ---------------------------------------------------------------------------
+# visualization
+# ---------------------------------------------------------------------------
+
+@torch.inference_mode()
+def _visualize_ddpm_sample(
+    model: nn.Module,
+    loader: torch.utils.data.DataLoader,
+    scheduler: DDPMNoiseScheduler,
+    save_path: Path,
+    device: torch.device,
+    sample_steps: int = 10,
+    use_ddim: bool = True,
+    ddim_eta: float = 0.0,
+    title: Optional[str] = None,
+    seed: Optional[int] = None,
+) -> None:
+    """Pick a random sample from ``loader``, run DDIM sampling, save a 4-panel plot.
+
+    Panels: noisy input | denoised prediction | clean reference | residual.
+    """
+    dataset = loader.dataset
+    rng = np.random.default_rng(seed)
+    idx = int(rng.integers(0, len(dataset)))
+    sample = dataset[idx]
+    x, y = sample
+    x = x.unsqueeze(0).to(device)
+    y = y.unsqueeze(0).to(device)
+
+    x_0_true = x - y
+    x_0_pred, _ = scheduler.sample_full(
+        model, x, num_steps=sample_steps, use_ddim=use_ddim, ddim_eta=ddim_eta, progress=False
+    )
+
+    suffix = f"sample idx={idx}"
+    full_title = f"{title} | {suffix}" if title else suffix
+    plot_sample(
+        input_data=x,
+        prediction=x_0_pred,
+        target=x_0_true,
+        save_path=save_path,
+        title=full_title,
+        cmap="gray",
+    )
+
+
+# ---------------------------------------------------------------------------
+# DDPM-specific plotting (train=line, val=scatter; dual-axis loss)
+# ---------------------------------------------------------------------------
+
+def _plot_ddpm_loss_curve(
+    loss_history: Dict[str, list],
+    save_path: Path,
+) -> None:
+    """Loss curve: train_l1 on left y-axis (line), val on right y-axis (scatter)."""
+    import matplotlib.pyplot as plt
+
+    train_vals = loss_history.get("train_l1", [])
+    val_vals = loss_history.get("val", [])
+
+    fig, ax1 = plt.subplots(figsize=(7, 4))
+
+    if train_vals:
+        train_arr = np.asarray(train_vals, dtype=float)
+        train_valid = np.isfinite(train_arr)
+        if train_valid.any():
+            ax1.plot(np.where(train_valid)[0], train_arr[train_valid], "b-", label="train_l1", linewidth=1.5)
+    ax1.set_xlabel("epoch")
+    ax1.set_ylabel("train_l1", color="b")
+    ax1.tick_params(axis="y", labelcolor="b")
+    ax1.grid(True, alpha=0.3)
+
+    ax2 = ax1.twinx()
+    if val_vals:
+        val_arr = np.asarray(val_vals, dtype=float)
+        valid = np.isfinite(val_arr)
+        if valid.any():
+            ax2.scatter(
+                np.where(valid)[0], val_arr[valid],
+                c="r", marker="x", s=30, label="val (MSE)",
+            )
+    ax2.set_ylabel("val MSE", color="r")
+    ax2.tick_params(axis="y", labelcolor="r")
+
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="best")
+
+    fig.suptitle("Loss")
+    fig.tight_layout()
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_ddpm_metric_curves(
+    metric_history: Dict[str, list],
+    save_dir: Path,
+) -> None:
+    """Metric curves: train_xxx as continuous line, val_xxx as scatter points."""
+    import matplotlib.pyplot as plt
+
+    groups: Dict[str, Dict[str, list]] = {}
+    for key in metric_history:
+        for prefix in ("train_", "val_"):
+            if key.startswith(prefix):
+                base = key[len(prefix):]
+                groups.setdefault(base, {})[key] = metric_history[key]
+                break
+
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    for base, sub_history in groups.items():
+        fig, ax = plt.subplots(figsize=(7, 4))
+        plotted = False
+        for name, values in sub_history.items():
+            arr = np.asarray(values, dtype=float)
+            valid = np.isfinite(arr)
+            if not valid.any():
+                continue
+            if name.startswith("train_"):
+                ax.plot(np.where(valid)[0], arr[valid], "-", label=name, linewidth=1.5)
+            else:
+                ax.scatter(
+                    np.where(valid)[0], arr[valid],
+                    marker="x", s=30, label=name,
+                )
+            plotted = True
+
+        if plotted:
+            ax.set_xlabel("epoch")
+            ax.set_ylabel(base)
+            ax.set_title(base.upper())
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc="best")
+            fig.tight_layout()
+            fig.savefig(save_dir / f"{base}_curve.png", dpi=120, bbox_inches="tight")
+        plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +431,7 @@ def main() -> None:
     cfg = load_config(args.config)
     apply_denoise_experiment_name_from_model(cfg)
 
-    distributed, rank, local_rank, world_size = init_distributed()
+    distributed, rank, local_rank, world_size = _init_distributed_ddpm()
 
     set_seed(int(cfg["experiment"]["seed"]))
     exp_dir = setup_experiment_dir_distributed(cfg, rank, distributed, base_dir=_REPO_ROOT)
@@ -274,10 +457,37 @@ def main() -> None:
             distributed=distributed,
         )
 
+    # --- patch val_loader & eval_train_loader for DDP eval -------------------
+    if distributed:
+        loader_cfg = cfg["data"].get("loader", {})
+        _bs = int(loader_cfg.get("batch_size", 8))
+        _nw = int(loader_cfg.get("num_workers", 0))
+        _pm = bool(loader_cfg.get("pin_memory", True))
+        _seed = int(cfg["experiment"]["seed"])
+
+        val_ds = val_loader.dataset
+        val_sampler = torch.utils.data.DistributedSampler(
+            val_ds, num_replicas=world_size, rank=rank, shuffle=False, seed=_seed,
+        )
+        val_loader = torch.utils.data.DataLoader(
+            val_ds, batch_size=_bs, sampler=val_sampler, num_workers=_nw,
+            pin_memory=_pm, drop_last=False,
+        )
+
+        train_ds = train_loader.dataset
+        eval_train_sampler = torch.utils.data.DistributedSampler(
+            train_ds, num_replicas=world_size, rank=rank, shuffle=False, seed=_seed,
+        )
+        eval_train_loader = torch.utils.data.DataLoader(
+            train_ds, batch_size=_bs, sampler=eval_train_sampler, num_workers=_nw,
+            pin_memory=_pm, drop_last=False,
+        )
+
     # --- model & scheduler -------------------------------------------------
     model = build_model(cfg["model"]).to(device)
     from utils.train_utils import maybe_wrap_ddp as _wrap
     model = _wrap(model, distributed=distributed, device=device, local_rank=local_rank)
+    _eval_model = unwrap_ddp(model)
 
     diff_cfg = cfg["diffusion"]
     ddpm_scheduler = DDPMNoiseScheduler(
@@ -303,11 +513,13 @@ def main() -> None:
     loss_keys = ["train_l1", "val"]
     logger: Optional[TrainingLogger] = None
     if rank == 0:
+        is_resume = bool(cfg["train"].get("resume"))
         logger = TrainingLogger(
             log_dir=exp_dir / cfg["log"].get("log_dir", "logs"),
             loss_keys=loss_keys,
             metric_keys=[f"train_{m}" for m in metric_names] + [f"val_{m}" for m in metric_names],
             plot_interval=int(cfg["log"].get("plot_interval", 5)),
+            clear_existing=not is_resume,
         )
     if logger is not None:
         logger.info(
@@ -322,6 +534,8 @@ def main() -> None:
     vis_interval = int(cfg["train"].get("vis_interval", 5))
     grad_clip = cfg["train"].get("grad_clip")
     eval_sample_steps = int(cfg["train"].get("eval_sample_steps", 10))
+    eval_use_ddim = bool(cfg["train"].get("eval_use_ddim", True))
+    eval_ddim_eta = float(cfg["train"].get("eval_ddim_eta", 0.0))
 
     best_val_loss = float("inf")
     T = ddpm_scheduler.num_timesteps
@@ -369,48 +583,59 @@ def main() -> None:
             l1_sum += loss.item()
             n_batches += 1
 
-        l1_avg = l1_sum / max(n_batches, 1)
+        l1_avg: float
+        if distributed:
+            stat = torch.tensor([float(l1_sum), float(n_batches)], device=device, dtype=torch.float64)
+            torch.distributed.all_reduce(stat, op=torch.distributed.ReduceOp.SUM)
+            l1_avg = float(stat[0].item() / max(stat[1].item(), 1.0))
+        else:
+            l1_avg = l1_sum / max(n_batches, 1)
 
         if lr_scheduler is not None:
             lr_scheduler.step()
 
-        # --- evaluation (rank 0 only — DDPM sampling is too slow for all ranks) -
+        # --- evaluation (all ranks, every eval_interval) ------------------
+        train_metrics: Dict[str, float] = {n: float("nan") for n in metric_names}
         val_losses: Dict[str, float] = {"val": float("nan")}
         val_metrics: Dict[str, float] = {}
-        train_metrics: Dict[str, float] = {n: float("nan") for n in metric_names}
-
-        if rank == 0 and eval_train_loader is not None:
-            eval_model = unwrap_ddp(model)
-            _, train_metrics = _evaluate_ddpm(
-                model=eval_model,
-                loader=eval_train_loader,
-                scheduler=ddpm_scheduler,
-                metrics=metrics,
-                device=device,
-                sample_steps=eval_sample_steps,
-            )
-            if (epoch + 1) % eval_interval == 0:
-                val_losses, val_metrics = _evaluate_ddpm(
-                    model=eval_model,
-                    loader=val_loader,
+        do_eval = (epoch == 0 or (epoch + 1) % eval_interval == 0)
+        if do_eval:
+            if eval_train_loader is not None:
+                _, train_metrics = _evaluate_ddpm(
+                    model=_eval_model,
+                    loader=eval_train_loader,
                     scheduler=ddpm_scheduler,
                     metrics=metrics,
                     device=device,
                     sample_steps=eval_sample_steps,
+                    use_ddim=eval_use_ddim,
+                    ddim_eta=eval_ddim_eta,
+                    distributed=distributed,
                 )
-                if val_losses["val"] < best_val_loss:
-                    best_val_loss = val_losses["val"]
-                    _save_ddpm_checkpoint(
-                        exp_dir / "checkpoints" / "best.pt",
-                        model=model,
-                        optimizer=optimizer,
-                        scheduler_obj=lr_scheduler,
-                        ddpm_scheduler=ddpm_scheduler,
-                        epoch=epoch,
-                        extras={"config": cfg},
-                    )
-                    if logger is not None:
-                        logger.info(f"Best checkpoint saved (val_mse={best_val_loss:.6f})")
+            val_losses, val_metrics = _evaluate_ddpm(
+                model=_eval_model,
+                loader=val_loader,
+                scheduler=ddpm_scheduler,
+                metrics=metrics,
+                device=device,
+                sample_steps=eval_sample_steps,
+                use_ddim=eval_use_ddim,
+                ddim_eta=eval_ddim_eta,
+                distributed=distributed,
+            )
+            if rank == 0 and val_losses["val"] < best_val_loss:
+                best_val_loss = val_losses["val"]
+                _save_ddpm_checkpoint(
+                    exp_dir / "checkpoints" / "best.pt",
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler_obj=lr_scheduler,
+                    ddpm_scheduler=ddpm_scheduler,
+                    epoch=epoch,
+                    extras={"config": cfg},
+                )
+                if logger is not None:
+                    logger.info(f"Best checkpoint saved (val_mse={best_val_loss:.6f})")
 
         # Barrier: ensure rank 0 eval is done before all ranks enter next epoch
         if distributed:
@@ -445,14 +670,34 @@ def main() -> None:
                 extras={"config": cfg},
             )
 
-        # --- visualization (rank 0, skip DDPM sampling overhead) ------------
-        # DDPM sampling is too slow for per-epoch visualization; skip by default.
-        # Set vis_interval to a very large value or 0 to disable.
+        # --- visualization (rank 0) ----------------------------------------
+        if rank == 0 and vis_interval > 0 and (epoch == 0 or (epoch + 1) % vis_interval == 0):
+            _visualize_ddpm_sample(
+                model=_eval_model,
+                loader=val_loader,
+                scheduler=ddpm_scheduler,
+                save_path=exp_dir / "visualizations" / f"epoch_{epoch:04d}.png",
+                device=device,
+                sample_steps=eval_sample_steps,
+                use_ddim=eval_use_ddim,
+                ddim_eta=eval_ddim_eta,
+                title=f"DDPM {g_type} epoch {epoch}",
+                seed=None,
+            )
 
     elapsed = time.time() - start_time
     if logger is not None:
         logger.info(
             f"DDPM {g_type} training finished in {elapsed:.2f}s ({elapsed/60:.2f} min)."
+        )
+        # Overwrite auto-generated curves with DDPM-specific versions
+        _plot_ddpm_loss_curve(
+            logger._loss_history,
+            logger._loss_curve_path,
+        )
+        _plot_ddpm_metric_curves(
+            logger._metric_history,
+            logger._metric_curve_dir,
         )
         logger.close()
     destroy_distributed()

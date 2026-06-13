@@ -4,12 +4,16 @@ Upload trained model checkpoints (best.pt + config.yaml) to a Hugging Face repos
 Usage:
     export HF_NAMESPACE=GeoBrain  # or HF_USERNAME (personal account)
     export HF_TOKEN="your_hf_token"
-    python tools/upload_to_hf.py
+    python tools/upload_model_to_hf.py --models unet res_unet
+
+Choose from: unet, res_unet, dncnn, atten_unet, enhanced_unet, ddpm,
+              pix2pix, sanet, physics
 
 Optional:
-    --repo-name NAME     HF repo name (default: ground-roll-attenuation)
+    --repo-name NAME     HF repo name (default: coherent-noise-attenuation)
     --results-dir PATH   Override results root (default: /data/shared/benchmark/ground_roll/results)
     --dry-run            Scan and print what would be uploaded without uploading
+    --models M [M ...]   Only upload the listed model(s); default = all
 """
 
 import argparse
@@ -27,18 +31,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-RESULTS_ROOT = "/data/shared/benchmark/ground_roll/results"
-DEFAULT_REPO = "ground-roll-attenuation"
+RESULTS_ROOT = "/data/shared/benchmark/ground_roll/results_0510"
+DEFAULT_REPO = "coherent-noise-attenuation"
 
 FOLDER_PATTERN = re.compile(
     r"denoise_(?P<model>.+)_base\d+_level(?P<level>[\d.]+)_seed(?P<seed>\d+)"
 )
+
+# Simplified format (new training scripts): denoise_{model}_base{date}
+FOLDER_PATTERN_SIMPLE = re.compile(
+    r"denoise_(?P<model>.+)_base\d+$"
+)
+
+# Extract noise level from data path, e.g. noisy_1.0.sgy → 1.0
+_NOISE_LEVEL_RE = re.compile(r"noisy_([\d.]+)\.sgy")
 
 MODEL_DISPLAY = {
     "unet": "UNet",
     "res_unet": "ResUNet",
     "dncnn": "DnCNN",
     "atten_unet": "Attention UNet",
+    "enhanced_atten_unet": "Enhanced Atten-UNet",
+    "sanet": "SANet",
+    "physics_unet": "Physics CNN",
+    "pix2pix": "Pix2Pix cGAN",
+    "ddpm": "DDPM cDDPM",
 }
 
 MODEL_DESCRIPTION = {
@@ -46,12 +63,99 @@ MODEL_DESCRIPTION = {
     "res_unet": "U-Net with residual blocks replacing plain double-conv layers (He et al., 2016; Zhang et al., 2018). Base channels: 32, depth: 4.",
     "dncnn": "Flat 17-layer Conv-BN-ReLU stack with residual learning (Zhang et al., 2017, IEEE TIP). Base channels: 64.",
     "atten_unet": "U-Net with additive attention gates on skip connections (Oktay et al., 2018, MIDL). Base channels: 32, depth: 4.",
+    "enhanced_atten_unet": "U-Net with residual blocks + attention-gated skip connections, trained with hybrid MSE + AFM (adaptive frequency modulation) loss. Base channels: 32, depth: 4.",
+    "sanet": "Soft Attention Network: multi-branch parallel convs (3×3, 5×5, 7×7) + spatial soft attention + residual blocks. Base channels: 32, 8 blocks.",
+    "physics_unet": "Physics-constrained 3-CNN separation network with f-k domain classifier for signal/ground-roll separation. Asymmetric kernels (7×21, 3×9). Base channels: 32, 3 levels.",
+    "pix2pix": "Pix2Pix cGAN with 7-level U-Net generator (Conv4×4 stride 2, LeakyReLU) and 4-level PatchGAN discriminator. Trained with adversarial + L1 (λ=100) loss.",
+    "ddpm": "Conditional DDPM (DDPM-2c) jointly modeling signal and ground-roll distributions. Modified U-Net with time embedding, self-attention bottleneck, 5 ResNet levels.",
 }
 
 NOISE_LEVELS = [1.0, 3.0, 5.0, 7.0, 9.0]
 
+# User-facing name → internal folder-pattern key
+_MODEL_ALIASES = {
+    "enhanced_unet": "enhanced_atten_unet",
+    "physics": "physics_unet",
+}
 
-def generate_model_card(entries, repo_name: str) -> str:
+_ALL_MODELS = sorted(
+    ["unet", "res_unet", "dncnn", "atten_unet", "enhanced_atten_unet",
+     "ddpm", "pix2pix", "sanet", "physics_unet"]
+)
+
+_VALID_MODEL_NAMES = sorted(list(_MODEL_ALIASES.keys()) + _ALL_MODELS)
+
+
+def _resolve_models(requested):
+    """Resolve user-facing model names to internal folder-pattern keys."""
+    if not requested:
+        return _ALL_MODELS
+    resolved = []
+    for name in requested:
+        name = name.strip().lower()
+        if name in _MODEL_ALIASES:
+            name = _MODEL_ALIASES[name]
+        if name not in _ALL_MODELS:
+            raise ValueError(
+                f"Unknown model {name!r}. Valid choices: {', '.join(_VALID_MODEL_NAMES)}"
+            )
+        resolved.append(name)
+    return resolved
+
+# Default path to the batch evaluation Excel file
+BATCH_EVAL_XLSX = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "scripts", "coherent_noise_attenuation", "batch_evaluation.xlsx",
+)
+
+
+def parse_batch_eval_xlsx(xlsx_path: str):
+    """Parse batch evaluation Excel into structured data.
+
+    Returns
+    -------
+    dict : {level_str: {model_key: {metric: value_str}}}.
+        model_key "raw" maps to the noisy baseline.
+    """
+    try:
+        import openpyxl
+    except ImportError:
+        logger.warning("openpyxl not installed; cannot parse batch evaluation Excel.")
+        return {}
+
+    wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
+    result = {}
+    for sheet_name in wb.sheetnames:
+        # sheet name format: "Noise X.X"
+        level = sheet_name.replace("Noise ", "").strip()
+        ws = wb[sheet_name]
+        rows = list(ws.iter_rows(values_only=True))
+        if len(rows) < 2:
+            continue
+        headers = [str(h).strip() if h else "" for h in rows[0]]
+        # map display names to registry keys
+        display_to_key = {v: k for k, v in MODEL_DISPLAY.items()}
+        display_to_key["Raw (noisy)"] = "raw"
+
+        level_data = {}
+        for row in rows[1:]:
+            if not row or not row[0]:
+                continue
+            method_name = str(row[0]).strip()
+            model_key = display_to_key.get(method_name, method_name.lower().replace(" ", "_"))
+            metrics = {}
+            for ci in range(1, len(headers)):
+                if ci < len(row) and row[ci] is not None:
+                    metrics[headers[ci].lower()] = str(row[ci]).strip()
+            if metrics:
+                level_data[model_key] = metrics
+        if level_data:
+            result[level] = level_data
+    wb.close()
+    return result
+
+
+def generate_model_card(entries, repo_name: str, eval_data: dict = None) -> str:
     """Generate a Hugging Face model card README.md."""
     model_keys = sorted({e["model"] for e in entries})
     models_str = "\n".join(
@@ -59,11 +163,13 @@ def generate_model_card(entries, repo_name: str) -> str:
         for k in model_keys
     )
 
-    # Count experiments per model
     count_str = "\n".join(
         f"  - {MODEL_DISPLAY.get(k, k)}: {sum(1 for e in entries if e['model'] == k)} checkpoints"
         for k in model_keys
     )
+
+    # build results tables from batch evaluation data
+    results_section = _build_results_section(eval_data or {})
 
     card = f"""---
 tags:
@@ -105,13 +211,13 @@ Five ground-roll intensity levels produce paired noisy / noise-label records:
 
 | Level | SNR (dB) | PSNR (dB) | SSIM | MAE | MSE | RMSE |
 |-------|----------|-----------|------|-----|-----|------|
-| 1.0   | 2.71     | 15.81     | 0.9480 | 0.030624 | 0.026232 | 0.161964 |
-| 3.0   | -6.83    | 6.27      | 0.9418 | 0.091871 | 0.236091 | 0.485892 |
-| 5.0   | -11.27   | 1.83      | 0.9402 | 0.153118 | 0.655809 | 0.809820 |
-| 7.0   | -14.19   | -1.09     | 0.9395 | 0.214366 | 1.285386 | 1.133749 |
-| 9.0   | -16.37   | -3.27     | 0.9390 | 0.275613 | 2.124822 | 1.457677 |
+| 1.0   | 2.7129   | 21.8322   | 0.9527 | 0.015312 | 0.006558 | 0.080982 |
+| 3.0   | -6.8295  | 18.3104   | 0.9477 | 0.022968 | 0.014756 | 0.121473 |
+| 5.0   | -11.2665 | 17.3952   | 0.9466 | 0.025520 | 0.018217 | 0.134970 |
+| 7.0   | -14.1891 | 16.9715   | 0.9461 | 0.026796 | 0.020084 | 0.141719 |
+| 9.0   | -16.3720 | 16.7268   | 0.9458 | 0.027561 | 0.021248 | 0.145768 |
 
-*Metrics computed on the full dataset in the original amplitude domain before normalization.*
+*Metrics computed on the test set (2D flattened shot gathers) in the normalized domain before denoising.*
 
 ## Model Architectures
 
@@ -144,13 +250,11 @@ Each subdirectory corresponds to one experiment: a model architecture trained at
 
 | Hyperparameter | Value |
 |----------------|-------|
-| Loss | MSE (predicted noise vs. label noise) |
-| Optimizer | AdamW (lr=1e-3, weight_decay=1e-4) |
+| Loss | MSE (noise-prediction models) / GAN+L1 (pix2pix) / L1 (DDPM) / hybrid MSE+AFM (enhanced) |
+| Optimizer | Adam / AdamW (lr=1e-4–1e-3, varies per model) |
 | Scheduler | Cosine annealing (min_lr=1e-6) |
-| Epochs | 200 |
+| Epochs | 100–200 (varies per model) |
 | Gradient clipping | 1.0 (max norm) |
-| Batch size | 196 |
-| Distributed training | 2 × NVIDIA RTX 4090, DDP |
 | Seeds | 42, 43, 44 per experiment |
 
 ## Usage
@@ -179,17 +283,7 @@ state_dict = torch.load(ckpt_path, map_location="cpu", weights_only=True)
 
 See the companion benchmark documentation for detailed experimental setup and full evaluation results.
 
-## Results (SNR dB)
-
-| Model | Params (M) | Level 1.0 | Level 3.0 | Level 5.0 | Level 7.0 | Level 9.0 |
-|-------|:----------:|:---------:|:---------:|:---------:|:---------:|:---------:|
-| Raw (noisy) | — | 2.71 | −6.83 | −11.27 | −14.19 | −16.37 |
-| UNet | 7.76 | 28.39±1.09 | 23.07±0.10 | 20.22±0.32 | 17.90±0.28 | 16.60±0.46 |
-| ResUNet | 8.11 | 31.62±0.56 | 22.65±0.93 | 18.11±2.12 | 16.60±1.44 | 14.61±0.01 |
-| DnCNN | 0.56 | 31.67±0.11 | 30.02±0.43 | 22.91±3.74 | — | — |
-| Attention UNet | 7.85 | 28.79±0.46 | 23.10±1.00 | 19.66±0.22 | 17.57±0.11 | 16.61±0.19 |
-
-Mean ± std over 3 seeds. All models achieve 15–31 dB SNR improvement. DnCNN delivers the best performance at low-to-mid noise levels with the smallest footprint (0.56 M parameters). See the benchmark documentation for per-level detailed metrics (PSNR, SSIM, MAE, MSE, RMSE).
+{results_section}
 
 ## References
 
@@ -202,30 +296,109 @@ Mean ± std over 3 seeds. All models achieve 15–31 dB SNR improvement. DnCNN d
     return card
 
 
+def _build_results_section(eval_data: dict) -> str:
+    """Build markdown results tables from batch evaluation data."""
+    if not eval_data:
+        return """## Results
+
+*Results pending — run batch_evaluate.py to populate.*
+"""
+
+    # column order
+    metric_cols = ["parameters (m)", "snr", "psnr", "ssim", "mae", "mse", "rmse"]
+    metric_headers = ["Method", "Params (M)", "SNR (dB)", "PSNR (dB)", "SSIM", "MAE", "MSE", "RMSE"]
+
+    # row order: raw first, then models in MODEL_ROW_ORDER from batch_evaluate.py
+    row_order = ["raw", "unet", "res_unet", "dncnn", "atten_unet",
+                 "enhanced_atten_unet", "sanet", "physics_unet", "pix2pix", "ddpm"]
+
+    lines = ["## Results\n"]
+    lines.append("Mean ± std over 3 seeds on the held-out test shot (FFID=9), evaluated on 2D-flattened data in the normalized domain. Raw (noisy) is the input before denoising.\n")
+
+    sorted_levels = sorted(eval_data.keys(), key=float)
+
+    for level in sorted_levels:
+        lines.append(f"### Noise Level {level}\n")
+        # header
+        lines.append("| " + " | ".join(metric_headers) + " |")
+        # separator
+        sep = ["---"] + [":---:"] * (len(metric_headers) - 1)
+        lines.append("| " + " | ".join(sep) + " |")
+
+        level_data = eval_data[level]
+        for rk in row_order:
+            if rk not in level_data:
+                continue
+            metrics = level_data[rk]
+            display = "Raw (noisy)" if rk == "raw" else MODEL_DISPLAY.get(rk, rk)
+            row = [display]
+            for mc in metric_cols:
+                row.append(metrics.get(mc, "—"))
+            lines.append("| " + " | ".join(row) + " |")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def scan_results(results_dir: str):
-    """Scan results directory and return list of (folder_name, model, level, seed)."""
+    """Scan results directory and return list of (folder_name, model, level, seed).
+
+    Supports two naming formats:
+
+    - Full:   ``denoise_{model}_base{date}_level{level}_seed{seed}``
+    - Simple: ``denoise_{model}_base{date}``  (reads seed/level from config.yaml)
+    """
+    import yaml as _yaml
+
     entries = []
     for name in os.listdir(results_dir):
-        m = FOLDER_PATTERN.match(name)
-        if not m:
-            continue
         fpath = os.path.join(results_dir, name)
         if not os.path.isdir(fpath):
             continue
+
+        m = FOLDER_PATTERN.match(name)
+        if m:
+            model, level, seed = m.group("model"), m.group("level"), m.group("seed")
+        else:
+            m = FOLDER_PATTERN_SIMPLE.match(name)
+            if m:
+                model = m.group("model")
+                # Try to read seed and noise level from config.yaml
+                seed = "0"
+                level = "unknown"
+                config_path = os.path.join(fpath, "config.yaml")
+                if os.path.isfile(config_path):
+                    try:
+                        with open(config_path, "r") as f:
+                            cfg = _yaml.safe_load(f)
+                        seed = str(cfg.get("experiment", {}).get("seed", "0"))
+                        input_path = cfg.get("data", {}).get("segy_pair", {}).get("input_path", "")
+                        lm = _NOISE_LEVEL_RE.search(input_path)
+                        if lm:
+                            level = lm.group(1)
+                    except Exception:
+                        pass
+            else:
+                continue
+
         best_pt = os.path.join(fpath, "checkpoints", "best.pt")
         config_yaml = os.path.join(fpath, "config.yaml")
         entries.append(
             {
                 "folder": name,
                 "path": fpath,
-                "model": m.group("model"),
-                "level": m.group("level"),
-                "seed": m.group("seed"),
+                "model": model,
+                "level": level,
+                "seed": seed,
                 "best_pt": best_pt if os.path.isfile(best_pt) else None,
                 "config_yaml": config_yaml if os.path.isfile(config_yaml) else None,
             }
         )
-    entries.sort(key=lambda x: (x["model"], x["level"], x["seed"]))
+    entries.sort(key=lambda x: (
+        x["model"],
+        float(x["level"]) if x["level"].replace(".", "", 1).isdigit() else 0.0,
+        int(x["seed"]) if x["seed"].lstrip("-").isdigit() else 0,
+    ))
     return entries
 
 
@@ -245,6 +418,18 @@ def main():
     parser.add_argument(
         "--no-model-card", action="store_true", help="Skip uploading the model card"
     )
+    parser.add_argument(
+        "--models", nargs="*", metavar="MODEL", default=None,
+        help="Only upload the listed model(s).  Valid: %s.  Default: all."
+             % ", ".join(_VALID_MODEL_NAMES),
+    )
+    parser.add_argument(
+        "--eval-xlsx", nargs="+", default=None,
+        help="Path(s) to batch evaluation Excel(s) for populating the model card.  "
+             "When multiple files are given, their data is merged (later files "
+             "override earlier ones for the same model at the same noise level).  "
+             "Default: scripts/coherent_noise_attenuation/batch_evaluation.xlsx",
+    )
     args = parser.parse_args()
 
     # namespace = os.environ.get("HF_NAMESPACE") or os.environ.get("HF_USERNAME")
@@ -253,6 +438,22 @@ def main():
     token = os.environ.get("HF_TOKEN")
 
     entries = scan_results(args.results_dir)
+
+    # Filter to requested models (if --models given)
+    selected = _resolve_models(args.models)
+    if args.models:
+        entries = [e for e in entries if e["model"] in selected]
+        if not entries:
+            logger.warning(
+                "No result folders matched models: %s.  Available in scan: %s",
+                ", ".join(selected),
+                ", ".join(sorted({e["model"] for e in scan_results(args.results_dir)})),
+            )
+            sys.exit(0)
+        logger.info(
+            "Selected models: %s → %d folder(s)", ", ".join(selected), len(entries)
+        )
+
     if not entries:
         logger.warning("No matching result folders found in %s", args.results_dir)
         sys.exit(0)
@@ -299,7 +500,23 @@ def main():
 
     # Upload model card (always overwrite — it is regenerated each run)
     if not args.no_model_card:
-        card = generate_model_card(entries, repo_id)
+        # Parse batch evaluation results for the model card
+        eval_data: dict = {}
+        xlsx_paths = args.eval_xlsx if args.eval_xlsx else [BATCH_EVAL_XLSX]
+        for xlsx_path in xlsx_paths:
+            if os.path.isfile(xlsx_path):
+                data = parse_batch_eval_xlsx(xlsx_path)
+                if data:
+                    # merge: later files override earlier ones for same (level, model)
+                    for level, models in data.items():
+                        eval_data.setdefault(level, {}).update(models)
+                    logger.info("Loaded batch evaluation data from %s", xlsx_path)
+            else:
+                logger.warning("Eval Excel not found: %s", xlsx_path)
+        if not eval_data:
+            logger.warning("No evaluation data loaded — model card will have "
+                           "'Results pending' placeholder.")
+        card = generate_model_card(entries, repo_id, eval_data)
         try:
             api.upload_file(
                 path_or_fileobj=card.encode(),
@@ -328,12 +545,13 @@ def main():
                 skipped += 1
                 continue
             try:
-                upload_file(
-                    path_or_fileobj=local_path,
-                    path_in_repo=remote,
-                    repo_id=repo_id,
-                    token=token,
-                )
+                with open(local_path, "rb") as f:
+                    api.upload_file(
+                        path_or_fileobj=f,
+                        path_in_repo=remote,
+                        repo_id=repo_id,
+                        token=token,
+                    )
                 logger.info("  [OK]     %s", remote)
                 uploaded += 1
             except Exception as exc:

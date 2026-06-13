@@ -5,7 +5,7 @@
 # Supported formats: segy_pair, npy_pair, mat_pair (pick one block).
 
 experiment:
-  name: denoise_pix2pix_base0511
+  name: denoise_pix2pix_base0521
   output_dir: /data/shared/benchmark/ground_roll/results_0510
   seed: 42
   device: cuda:4
@@ -24,7 +24,7 @@ data:
     test: 1
 
   loader:
-    batch_size: 2      # Pix2Pix is memory-heavy (G+D, 7-level U-Net)
+    batch_size: 256      # Pix2Pix is memory-heavy (G+D, 7-level U-Net)
     num_workers: 4
     pin_memory: true
 
@@ -87,7 +87,7 @@ d_scheduler:
     min_lr: 1.0e-6
 
 train:
-  epochs: 100
+  epochs: 200
   grad_clip: null        # no gradient clipping (not used in original Pix2Pix)
   log_step: false
   log_interval: 10

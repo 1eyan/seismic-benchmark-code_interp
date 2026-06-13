@@ -4,9 +4,30 @@ with one sheet per noise level.
 
 Usage::
 
+    # Evaluate all experiments under a directory
     python scripts/coherent_noise_attenuation/batch_evaluate.py \\
         --root_dir results/coherent_noise_attenuation \\
         --output results/coherent_noise_attenuation/batch_evaluation.xlsx
+
+    # Only evaluate specific models
+    python scripts/coherent_noise_attenuation/batch_evaluate.py \\
+        --root_dir /data/shared/benchmark/ground_roll/results_0510 \\
+        --models ddpm pix2pix sanet \\
+        --output results/batch_evaluation_part.xlsx
+
+    # Merge into existing Excel without re-evaluating already-done models
+    python scripts/coherent_noise_attenuation/batch_evaluate.py \\
+        --root_dir /data/shared/benchmark/ground_roll/results_0510 \\
+        --models sanet \\
+        --output results/batch_evaluation.xlsx \\
+        --merge
+
+    # Specify device and batch size
+    python scripts/coherent_noise_attenuation/batch_evaluate.py \\
+        --root_dir /data/shared/benchmark/ground_roll/results_0510 \\
+        --models ddpm \\
+        --device cuda:0 \\
+        --batch_size 4
 """
 
 from __future__ import annotations
@@ -21,6 +42,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import yaml
 
 # ---------------------------------------------------------------------------
 # repo-root bootstrap (same pattern as the training scripts)
@@ -68,6 +90,12 @@ _DIR_RE = re.compile(
     r"^denoise_(.+)_base\d+_level([\d.]+)_seed(\d+)$"
 )
 
+# Simplified format (new training scripts): denoise_{model}_base{date}
+_DIR_RE_SIMPLE = re.compile(r"^denoise_(.+)_base(\d+)$")
+
+# Extract noise level from data path, e.g. noisy_1.0.sgy → 1.0
+_NOISE_LEVEL_RE = re.compile(r"noisy_([\d.]+)\.sgy")
+
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -93,8 +121,28 @@ def discover_results(root: Path) -> List[Dict[str, Any]]:
             continue
         parsed = parse_dir_name(d.name)
         if parsed is None:
-            print(f"[SKIP] cannot parse directory name: {d.name}")
-            continue
+            # Try simplified format (new training scripts): denoise_{model}_base{date}
+            m = _DIR_RE_SIMPLE.match(d.name)
+            if m is None:
+                print(f"[SKIP] cannot parse directory name: {d.name}")
+                continue
+            model = m.group(1)
+            # Read seed and noise level from config.yaml
+            seed = "0"
+            level = "unknown"
+            config_path = d / "config.yaml"
+            if config_path.is_file():
+                try:
+                    with open(config_path, "r") as f:
+                        cfg = yaml.safe_load(f)
+                    seed = str(cfg.get("experiment", {}).get("seed", "0"))
+                    input_path = cfg.get("data", {}).get("segy_pair", {}).get("input_path", "")
+                    lm = _NOISE_LEVEL_RE.search(input_path)
+                    if lm:
+                        level = lm.group(1)
+                except Exception:
+                    pass
+            parsed = (model, level, seed)
         ckpt = d / "checkpoints" / "best.pt"
         test_dir = d / "test_set"
         if not ckpt.is_file():
@@ -263,10 +311,102 @@ def _fmt(mean: float, std: float, metric: str) -> str:
     SNR, PSNR, SSIM: mean and std to 2 decimal places.
     """
     if metric in ("mae", "mse", "rmse"):
-        return f"{mean:.6f}±{std:.2f}"
+        return f"{mean:.6f}±{std:.6f}"
     if metric in ("snr", "psnr", "ssim"):
         return f"{mean:.4f}±{std:.4f}"
     return f"{mean:.2f}±{std:.2f}"
+
+
+def load_existing_results(
+    xlsx_path: Path,
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, float]]:
+    """Parse an existing batch evaluation Excel back into aggregated form.
+
+    Returns ``(aggregated, params_by_model)`` with the same structure as
+    ``aggregate()``, so new results can be merged in.
+
+    ``aggregated[level][model]`` maps metric name → ``(mean, std)`` tuple.
+    For the ``"raw"`` key, the value is a plain ``{metric: float}`` dict.
+    """
+    try:
+        import openpyxl
+    except ImportError:
+        print("openpyxl is required for --merge.  Install it with:  pip install openpyxl")
+        return {}, {}
+
+    # reverse lookup: display name → model key
+    display_to_key = {v: k for k, v in MODEL_DISPLAY.items()}
+    display_to_key["Raw (noisy)"] = "raw"
+
+    # regex to parse "mean±std" cell values
+    _CELL_RE = re.compile(r"^([\d.eE+-]+)±([\d.eE+-]+)$")
+
+    def _parse_cell(val: str):
+        """Try to parse 'mean±std' back to (float, float), or None."""
+        m = _CELL_RE.match(str(val).strip())
+        if m:
+            return float(m.group(1)), float(m.group(2))
+        return None
+
+    wb = openpyxl.load_workbook(str(xlsx_path), read_only=True, data_only=True)
+    aggregated: Dict[str, Dict[str, Any]] = {}
+    params_by_model: Dict[str, float] = {}
+
+    for sheet_name in wb.sheetnames:
+        # sheet name format: "Noise {level}"
+        level = sheet_name.replace("Noise ", "").strip()
+        ws = wb[sheet_name]
+        rows = list(ws.iter_rows(values_only=True))
+        if len(rows) < 2:
+            continue
+
+        headers = [str(h).strip().lower() if h else "" for h in rows[0]]
+        # headers: ["method", "parameters (m)", "snr", "psnr", "ssim", "mae", "mse", "rmse"]
+
+        level_data: Dict[str, Any] = {}
+        for row in rows[1:]:
+            if not row or not row[0]:
+                continue
+            method_display = str(row[0]).strip()
+            model_key = display_to_key.get(method_display)
+            if model_key is None:
+                continue
+
+            # parse Parameters (M)
+            if row[1] is not None and str(row[1]).strip() not in ("—", ""):
+                try:
+                    params_by_model[model_key] = float(str(row[1]).strip())
+                except ValueError:
+                    pass
+
+            # parse metrics from columns onward
+            metrics: Dict[str, Any] = {}
+            for ci in range(2, len(headers)):
+                metric_name = headers[ci]
+                if metric_name not in METRIC_NAMES:
+                    continue
+                cell_val = row[ci] if ci < len(row) else None
+                if cell_val is None or str(cell_val).strip() in ("—", ""):
+                    continue
+                if model_key == "raw":
+                    # just a plain value
+                    try:
+                        metrics[metric_name] = float(str(cell_val).strip())
+                    except ValueError:
+                        pass
+                else:
+                    parsed = _parse_cell(str(cell_val))
+                    if parsed is not None:
+                        metrics[metric_name] = parsed
+
+            if metrics:
+                level_data[model_key] = metrics
+
+        if level_data:
+            aggregated[level] = level_data
+
+    wb.close()
+    return aggregated, params_by_model
 
 
 def build_excel(
@@ -398,6 +538,19 @@ def main() -> None:
         "--batch_size", type=int, default=8,
         help="Batch size for inference (default: 8)",
     )
+    parser.add_argument(
+        "--models", nargs="+",
+        choices=list(MODEL_DISPLAY.keys()),
+        default=None,
+        help="Only evaluate the specified model(s).  Choices: %(choices)s.  "
+             "If omitted, all discovered models are evaluated.",
+    )
+    parser.add_argument(
+        "--merge", action="store_true",
+        help="If the output file already exists, load existing results, "
+             "skip already-evaluated (level, model) pairs, and merge new "
+             "results into the same Excel file without overwriting old data.",
+    )
     args = parser.parse_args()
 
     root_dir: Path = args.root_dir
@@ -415,6 +568,43 @@ def main() -> None:
         sys.exit(0)
 
     print(f"Found {len(entries)} experiment(s) to evaluate.")
+
+    # --- filter by model ------------------------------------------------------
+    if args.models:
+        entries = [e for e in entries if e["model"] in args.models]
+        if not entries:
+            print(f"No experiments match the specified model(s): {args.models}")
+            sys.exit(0)
+        print(f"Filtered to {len(entries)} experiment(s) for: {', '.join(args.models)}")
+
+    # --- merge mode: skip already-evaluated (level, model) pairs ---------------
+    old_aggregated: Dict[str, Dict[str, Any]] = {}
+    old_params: Dict[str, float] = {}
+    if args.merge and args.output.is_file():
+        print(f"Merge mode: loading existing results from {args.output}")
+        old_aggregated, old_params = load_existing_results(args.output)
+        # build set of (level, model) already in the existing Excel
+        already_done: set = set()
+        for level, models in old_aggregated.items():
+            for model in models:
+                already_done.add((level, model))
+        n_before = len(entries)
+        entries = [
+            e for e in entries
+            if (e["level"], e["model"]) not in already_done
+        ]
+        skipped = n_before - len(entries)
+        if skipped:
+            skipped_names = sorted(
+                {e["model"] for e in [
+                    {"model": m, "level": l} for l, m in already_done
+                ]}
+            )
+            print(f"Skipping {skipped} already-evaluated entry(s) for: "
+                  f"{', '.join(MODEL_DISPLAY.get(m, m) for m in skipped_names)}")
+        if not entries:
+            print("All requested models already evaluated — nothing to do.")
+            sys.exit(0)
 
     # --- evaluate -----------------------------------------------------------
     for i, entry in enumerate(entries):
@@ -448,6 +638,20 @@ def main() -> None:
 
     # --- aggregate per level -------------------------------------------------
     aggregated, params_by_model = aggregate(entries)
+
+    # --- merge with old results if requested ----------------------------------
+    if old_aggregated:
+        for level, models in old_aggregated.items():
+            if level not in aggregated:
+                aggregated[level] = {}
+            for model, stats in models.items():
+                if model not in aggregated[level]:
+                    aggregated[level][model] = stats
+        for model, n_m in old_params.items():
+            if model not in params_by_model:
+                params_by_model[model] = n_m
+        # re-sort levels by float key
+        aggregated = {k: aggregated[k] for k in sorted(aggregated.keys(), key=float)}
 
     # summary of what was aggregated
     print("Model parameter counts:")
