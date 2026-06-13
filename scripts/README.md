@@ -6,7 +6,10 @@ Entry-point scripts for training, evaluation, and data preparation. Scripts only
 
 ## Planned contents
 
-- `train.py` — Training entry, supports single-GPU and `torchrun` DDP.
+- `train.py` — Generic component-agnostic training (registry-based YAML config).
+- `train_interpolation_unet.py` — U-Net patch-based interpolation (CNN pipeline).
+- `train_interpolation_transformer.py` — Gated Transformer token-based interpolation.
+- `train_interpolation_patch_transformer.py` — Patch Transformer / ViT interpolation with optional mask channel.
 - `eval.py` — Evaluation entry, loads a checkpoint and runs the validation set.
 - `prepare_data.py` — Preprocessing entry (raw data → benchmark HDF5 format).
 - Optional: `sweep.py`, `profile.py`, etc.

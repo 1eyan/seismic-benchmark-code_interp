@@ -161,6 +161,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-npy", action="store_true", default=None)
     parser.add_argument("--mask-mode", type=str, default=None, choices=["uniform", "random", "continuous"])
     parser.add_argument("--mask-ratio", type=float, default=None)
+    parser.add_argument(
+        "--continuous-missing-traces",
+        type=int,
+        default=None,
+        help="Number of contiguous missing traces for continuous masking.",
+    )
     return parser.parse_args()
 
 
@@ -211,6 +217,10 @@ def main() -> None:
         args.mask_ratio if args.mask_ratio is not None
         else float(prep.get("mask_ratio", 0.5))
     )
+    continuous_missing_traces = (
+        args.continuous_missing_traces if args.continuous_missing_traces is not None
+        else prep.get("continuous_missing_traces")
+    )
 
     # --- Build model and load checkpoint ---
     model = build_model(cfg["model"]).to(device)
@@ -256,6 +266,8 @@ def main() -> None:
     mask_kwargs: Dict[str, Any] = {"mode": mask_mode, "ratio": mask_ratio}
     if mask_mode == "uniform":
         mask_kwargs["uniform_stride"] = int(prep.get("uniform_stride", 2))
+    if continuous_missing_traces is not None:
+        mask_kwargs["missing_traces"] = int(continuous_missing_traces)
     masked, trace_mask = mask_traces(shots, **mask_kwargs)
 
     shots_norm = shots

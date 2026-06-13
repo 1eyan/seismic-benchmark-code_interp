@@ -77,6 +77,7 @@ def inference_on_shots(
     batch_size: int = 8,
     patch_normalize: bool = False,
     patch_norm_eps: float = 1e-6,
+    include_mask_channel: bool = False,
 ) -> np.ndarray:
     """Patchify a full shot volume, run the model in batches, and reconstruct.
 
@@ -91,6 +92,10 @@ def inference_on_shots(
     patch_normalize  : if True, each input patch is normalized by its own
                        visible max-absolute amplitude before inference.
     patch_norm_eps   : lower bound for the patch scale.
+    include_mask_channel : if True, concatenate a binary mask channel
+                       (1 = missing, 0 = observed) to the input patches,
+                       producing C=2 inputs. Safe because masked traces
+                       are exactly zero after normalisation.
 
     Returns
     -------
@@ -119,6 +124,13 @@ def inference_on_shots(
     else:
         scales = None
         patches_for_net = patches
+
+    if include_mask_channel:
+        # Binary mask channel: 1 = missing, 0 = observed.
+        # Safe because mask_traces sets missing traces to exactly 0,
+        # and max_abs / patch_normalize both preserve zeros.
+        mask_channel = (patches_for_net[:, :1, :, :] == 0).astype(np.float32)
+        patches_for_net = np.concatenate([patches_for_net, mask_channel], axis=1)
 
     ds = TensorDataset(torch.from_numpy(patches_for_net))
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False, drop_last=False)

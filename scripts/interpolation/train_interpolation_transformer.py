@@ -167,6 +167,8 @@ def _preprocess_shots(
     mask_kwargs: Dict[str, Any] = {"mode": mask_mode, "ratio": mask_ratio}
     if mask_mode == "uniform":
         mask_kwargs["uniform_stride"] = int(prep.get("uniform_stride", 2))
+    if prep.get("continuous_missing_traces") is not None:
+        mask_kwargs["missing_traces"] = int(prep["continuous_missing_traces"])
     masked, _ = mask_traces(shots, **mask_kwargs)
 
     headers: Dict[str, np.ndarray] = {}
@@ -420,15 +422,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mask-mode",
         type=str,
-        default="continuous",
+        default=None,
         choices=["uniform", "random", "continuous"],
-        help="Trace masking mode.",
+        help="Trace masking mode. Defaults to config preprocess.mask_mode.",
     )
     parser.add_argument(
         "--mask-ratio",
         type=float,
-        default=0.2,
-        help="Trace missing ratio in (0, 1).",
+        default=None,
+        help="Trace missing ratio in (0, 1). Defaults to config preprocess.mask_ratio.",
+    )
+    parser.add_argument(
+        "--continuous-missing-traces",
+        type=int,
+        default=None,
+        help="Number of contiguous missing traces for continuous masking.",
     )
     return parser.parse_args()
 
@@ -442,11 +450,26 @@ def main() -> None:
     cfg = load_config(args.config)
 
     cfg.setdefault("preprocess", {})
-    cfg["preprocess"]["mask_mode"] = args.mask_mode
-    cfg["preprocess"]["mask_ratio"] = args.mask_ratio
 
-    ratio_pct = int(round(args.mask_ratio * 100))
-    cfg["experiment"]["name"] = f"{cfg['experiment']['name']}_{args.mask_mode}_miss{ratio_pct}"
+    # Only override config values when CLI args are explicitly provided.
+    if args.mask_mode is not None:
+        cfg["preprocess"]["mask_mode"] = args.mask_mode
+    if args.mask_ratio is not None:
+        cfg["preprocess"]["mask_ratio"] = args.mask_ratio
+    if args.continuous_missing_traces is not None:
+        cfg["preprocess"]["continuous_missing_traces"] = args.continuous_missing_traces
+
+    # Build experiment name: distinguish ratio-based vs fixed-trace-continuous.
+    mask_mode = str(cfg["preprocess"].get("mask_mode", "continuous"))
+    if mask_mode == "continuous" and args.continuous_missing_traces is not None:
+        cfg["experiment"]["name"] = (
+            f"{cfg['experiment']['name']}_{mask_mode}"
+            f"_miss{args.continuous_missing_traces}tr"
+        )
+    else:
+        mask_ratio = float(cfg["preprocess"].get("mask_ratio", 0.2))
+        ratio_pct = int(round(mask_ratio * 100))
+        cfg["experiment"]["name"] = f"{cfg['experiment']['name']}_{mask_mode}_miss{ratio_pct}"
 
     distributed, rank, local_rank, world_size = init_distributed()
 
@@ -457,8 +480,14 @@ def main() -> None:
     # --- Data ---
     masked_shots, target_shots, per_shot_ffid, headers = _preprocess_shots(cfg)
 
-    data_cfg = cfg["data"]["segy"]
-    traces_per_shot = int(data_cfg["traces_per_shot"])
+    data_cfg = None
+    for key in ("segy", "npy", "mat"):
+        if key in cfg["data"]:
+            data_cfg = cfg["data"][key]
+            break
+    if data_cfg is None:
+        raise ValueError("No data source found in config (expected data.segy, data.npy, or data.mat).")
+    traces_per_shot = int(data_cfg.get("traces_per_shot", 201))
     n_shots = masked_shots.shape[0]
 
     if not headers:

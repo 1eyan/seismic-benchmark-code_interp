@@ -159,6 +159,7 @@ def mask_traces(
     ratio: float = 0.5,
     *,
     uniform_stride: Optional[int] = None,
+    missing_traces: Optional[int] = None,
     rng: RNGLike = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Zero out traces along the trace axis and return the boolean mask.
@@ -172,6 +173,10 @@ def mask_traces(
                      masks one contiguous block of the same length per shot.
     ratio          : missing fraction in ``(0, 1)``.
     uniform_stride : keyword-only; integer >= 2; only valid for ``mode="uniform"``.
+    missing_traces : keyword-only; exact number of traces to mask; only valid
+                     for ``mode="continuous"``. When provided, ``ratio`` is
+                     ignored for computing the mask length (but must still be
+                     a valid float for backward compatibility).
     rng            : seed / :class:`numpy.random.Generator`.
 
     Returns
@@ -183,6 +188,10 @@ def mask_traces(
     if mode != "uniform" and uniform_stride is not None:
         raise ValueError(
             f"uniform_stride only applies when mode='uniform', got mode={mode!r}."
+        )
+    if missing_traces is not None and mode != "continuous":
+        raise ValueError(
+            f"missing_traces only applies when mode='continuous', got mode={mode!r}."
         )
     gen = _as_generator(rng)
     x, was_2d = _as_3d(shots)
@@ -203,9 +212,17 @@ def mask_traces(
         mask[:] = True
         mask[:, keep_idx] = False
     else:
-        if not 0.0 < ratio < 1.0:
-            raise ValueError(f"ratio must be in (0, 1), got {ratio}.")
-        n_missing = max(1, min(int(round(n_traces * ratio)), n_traces - 1))
+        if missing_traces is not None:
+            if not 1 <= missing_traces < n_traces:
+                raise ValueError(
+                    f"missing_traces must be in [1, {n_traces - 1}], "
+                    f"got {missing_traces}."
+                )
+            n_missing = missing_traces
+        else:
+            if not 0.0 < ratio < 1.0:
+                raise ValueError(f"ratio must be in (0, 1), got {ratio}.")
+            n_missing = max(1, min(int(round(n_traces * ratio)), n_traces - 1))
         rows = np.arange(n_shots)[:, None]
         if mode == "random":
             keys = gen.random((n_shots, n_traces))

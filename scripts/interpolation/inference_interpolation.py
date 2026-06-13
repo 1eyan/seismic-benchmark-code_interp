@@ -256,6 +256,7 @@ def main() -> None:
         batch_size=batch_size,
         patch_normalize=bool(prep.get("patch_normalize", False)),
         patch_norm_eps=float(prep.get("patch_norm_eps", 1e-6)),
+        include_mask_channel=bool(prep.get("include_mask_channel", False)),
     )
     mask_3d = trace_mask[..., None]
     recon_norm = np.where(mask_3d, pred_norm, shots_norm)

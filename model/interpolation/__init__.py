@@ -16,6 +16,8 @@ from . import gated_transformer_v9  # noqa: F401
 from . import gated_transformer_v9_encdec  # noqa: F401
 from . import gated_transformer_v11  # noqa: F401
 from . import gated_transformer_v11_encdec  # noqa: F401
+from . import trace_token_transformer_interpolator  # noqa: F401
+from . import hf_vit_interpolator  # noqa: F401
 
 __all__ = [
     "MODEL_REGISTRY",

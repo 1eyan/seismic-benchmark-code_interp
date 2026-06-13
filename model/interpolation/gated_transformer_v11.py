@@ -1211,7 +1211,7 @@ if __name__ == "__main__":
     # 简单测试 V9 模型（纯网络，模拟已切块数据）
     print("=== 测试 Gated Transformer V9（纯网络部分）===")
 
-    chunk_length = 128
+    chunk_length = 256
     num_traces = 201
     n_chunks = 5
     seq_len = num_traces * n_chunks

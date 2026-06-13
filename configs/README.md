@@ -7,7 +7,7 @@ Training / evaluation parameter configs. One file per experiment. Hyper-paramete
 ## Planned contents
 
 - `default.yaml` — Default template; copy and edit it to create a new experiment.
-- Task- or model-specific configs, e.g. `mae_pretrain.yaml`, `velocity_inversion.yaml`, `denoise_unet.yaml`.
+- Task- or model-specific configs, e.g. `interpolation_trace_transformer.yaml`, `interpolation_hf_vit.yaml`, `denoise_unet.yaml`.
 - Suggested sections per file: `data` / `model` / `optim` / `scheduler` / `train` / `eval` / `log`.
 
 ## Constraints
