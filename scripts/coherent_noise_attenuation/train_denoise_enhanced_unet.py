@@ -1,6 +1,7 @@
 """Enhanced Attention U-Net with hybrid MSE+AFM loss for ground-roll attenuation.
 
-The model predicts the **clean signal** directly (not noise residual).
+The model predicts the **additive noise component** (aligned with other models
+in this benchmark).  Denoised = input - predicted_noise.
 Loss = MSE + λ * AFM (adaptive frequency modulation in f-x domain via torch.fft).
 
 CUDA_VISIBLE_DEVICES=6,7 torchrun --nproc_per_node=2 \\
@@ -63,7 +64,7 @@ from utils import (  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# data pipeline — derives clean-signal target from paired noisy/noise data
+# data pipeline — returns noise-label target (aligned with other models)
 # ---------------------------------------------------------------------------
 
 def _preprocess_shots(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -125,7 +126,7 @@ def _preprocess_shots(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.n
     else:
         per_shot_ffid = np.arange(input_shots.shape[0])
 
-    return input_shots, clean_shots, per_shot_ffid
+    return input_shots, noise_shots, per_shot_ffid
 
 
 def _patchify_pairs(
@@ -231,7 +232,7 @@ def main() -> None:
     vis_interval = int(cfg["train"].get("vis_interval", 5))
     log_step = bool(cfg["train"].get("log_step", False))
 
-    # Model predicts clean signal directly → no residual subtraction needed
+    # Model predicts noise residual → denoised = input - pred (aligned with other models)
     best_val_loss = float("inf")
     start_time = time.time()
     for epoch in range(total_epochs):
@@ -249,18 +250,14 @@ def main() -> None:
         train_metrics: Dict[str, float] = {n: float("nan") for n in metric_names}
 
         if eval_train_loader is not None:
-            # metrics_on_denoised_signal=False: model outputs clean signal,
-            # target is already clean; compare directly
             _, train_metrics = evaluate(
                 model=model, loader=eval_train_loader, loss_fn=loss_fn,
                 metrics=metrics, device=device,
-                metrics_on_denoised_signal=False,
             )
             if (epoch + 1) % eval_interval == 0:
                 val_losses, val_metrics = evaluate(
                     model=model, loader=val_loader, loss_fn=loss_fn,
                     metrics=metrics, device=device,
-                    metrics_on_denoised_signal=False,
                 )
                 best_val_loss = maybe_save_best_checkpoint(
                     exp_dir / "checkpoints" / "best.pt",

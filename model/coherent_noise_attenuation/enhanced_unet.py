@@ -1,7 +1,8 @@
 """Enhanced U-Net with residual blocks, attention-gated skip connections, and AFM loss.
 
 Combines ResUNet-style residual blocks in encoder/decoder with additive attention
-gates on skip connections (Attention U-Net style).  Trained with a hybrid MSE +
+gates on skip connections (Attention U-Net style).  Predicts the additive noise
+component (aligned with other denoising models).  Trained with a hybrid MSE +
 adaptive-frequency-modulation (AFM) loss that operates in the f-x domain via FFT.
 
 Reference
@@ -74,7 +75,8 @@ class _ResBlock(nn.Module):
 class EnhancedAttentionUNet(nn.Module):
     """U-Net with residual encoder/decoder blocks and attention-gated skip connections.
 
-    Predicts the clean signal directly (not noise residual).
+    Predicts the additive ground-roll noise component.
+    Denoised signal = noisy input - predicted noise.
     """
 
     def __init__(

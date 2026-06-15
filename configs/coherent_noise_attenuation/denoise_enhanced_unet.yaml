@@ -1,7 +1,8 @@
 # Enhanced Attention U-Net with hybrid MSE+AFM loss for ground-roll attenuation.
-# Model predicts clean signal directly (not noise residual).
+# Model predicts the additive ground-roll noise component.
+# Denoised = noisy_input - predicted_noise.
 # Loss = MSE + lambda_afm * AFM (adaptive frequency modulation via torch.fft).
-# Metrics compare pred (clean) vs target (clean = noisy - noise_label).
+# Metrics compute on denoised signal vs clean reference (noisy - label).
 # Set input_path / target_path; shapes must match after load_volume.
 
 experiment:
