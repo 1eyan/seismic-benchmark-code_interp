@@ -74,16 +74,26 @@ METRIC_DISPLAY = [m.upper() for m in METRIC_NAMES]  # SNR, PSNR, SSIM, MAE, MSE,
 # registry key → display name (rows, top-to-bottom in each sheet)
 MODEL_DISPLAY = {
     "unet": "UNet",
+    "unet_plus": "UNet-Plus",
     "res_unet": "ResUNet",
+    "res_unet_plus": "ResUNet-Plus",
     "dncnn": "DnCNN",
     "atten_unet": "Attention UNet",
+    "atten_unet_plus": "Attention UNet-Plus",
     "enhanced_atten_unet": "Enhanced Atten-UNet",
     "sanet": "SANet",
     "physics_unet": "Physics CNN",
     "pix2pix": "Pix2Pix cGAN",
     "ddpm": "DDPM cDDPM",
 }
-MODEL_ROW_ORDER = ["unet", "res_unet", "dncnn", "atten_unet", "enhanced_atten_unet", "sanet", "physics_unet", "pix2pix", "ddpm"]
+MODEL_ROW_ORDER = [
+    "unet", "unet_plus",
+    "res_unet", "res_unet_plus",
+    "dncnn",
+    "atten_unet", "atten_unet_plus",
+    "enhanced_atten_unet",
+    "sanet", "physics_unet", "pix2pix", "ddpm",
+]
 
 
 # directory-name pattern: denoise_{model}_base{date}_level{level}_seed{seed}

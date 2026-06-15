@@ -48,9 +48,12 @@ _NOISE_LEVEL_RE = re.compile(r"noisy_([\d.]+)\.sgy")
 
 MODEL_DISPLAY = {
     "unet": "UNet",
+    "unet_plus": "UNet-Plus",
     "res_unet": "ResUNet",
+    "res_unet_plus": "ResUNet-Plus",
     "dncnn": "DnCNN",
     "atten_unet": "Attention UNet",
+    "atten_unet_plus": "Attention UNet-Plus",
     "enhanced_atten_unet": "Enhanced Atten-UNet",
     "sanet": "SANet",
     "physics_unet": "Physics CNN",
@@ -60,10 +63,13 @@ MODEL_DISPLAY = {
 
 MODEL_DESCRIPTION = {
     "unet": "Classic encoder-decoder with skip connections (Ronneberger et al., 2015). Base channels: 32, depth: 4.",
+    "unet_plus": "Wider UNet variant. Base channels: 64, depth: 4.",
     "res_unet": "U-Net with residual blocks replacing plain double-conv layers (He et al., 2016; Zhang et al., 2018). Base channels: 32, depth: 4.",
+    "res_unet_plus": "Wider ResUNet variant. Base channels: 64, depth: 4.",
     "dncnn": "Flat 17-layer Conv-BN-ReLU stack with residual learning (Zhang et al., 2017, IEEE TIP). Base channels: 64.",
     "atten_unet": "U-Net with additive attention gates on skip connections (Oktay et al., 2018, MIDL). Base channels: 32, depth: 4.",
-    "enhanced_atten_unet": "U-Net with residual blocks + attention-gated skip connections, trained with hybrid MSE + AFM (adaptive frequency modulation) loss. Base channels: 32, depth: 4.",
+    "atten_unet_plus": "Wider Attention UNet variant. Base channels: 64, depth: 4.",
+    "enhanced_atten_unet": "U-Net with residual blocks + attention-gated skip connections, trained with hybrid MSE + AFM (adaptive frequency modulation) loss. Predicts noise residual. Base channels: 32, depth: 4.",
     "sanet": "Soft Attention Network: multi-branch parallel convs (3×3, 5×5, 7×7) + spatial soft attention + residual blocks. Base channels: 32, 8 blocks.",
     "physics_unet": "Physics-constrained 3-CNN separation network with f-k domain classifier for signal/ground-roll separation. Asymmetric kernels (7×21, 3×9). Base channels: 32, 3 levels.",
     "pix2pix": "Pix2Pix cGAN with 7-level U-Net generator (Conv4×4 stride 2, LeakyReLU) and 4-level PatchGAN discriminator. Trained with adversarial + L1 (λ=100) loss.",
@@ -79,7 +85,8 @@ _MODEL_ALIASES = {
 }
 
 _ALL_MODELS = sorted(
-    ["unet", "res_unet", "dncnn", "atten_unet", "enhanced_atten_unet",
+    ["unet", "unet_plus", "res_unet", "res_unet_plus", "dncnn",
+     "atten_unet", "atten_unet_plus", "enhanced_atten_unet",
      "ddpm", "pix2pix", "sanet", "physics_unet"]
 )
 
