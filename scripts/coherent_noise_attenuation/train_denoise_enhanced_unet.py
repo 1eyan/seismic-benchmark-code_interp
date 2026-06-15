@@ -111,9 +111,6 @@ def _preprocess_shots(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.n
             noise_shots, mode=mode, per=per, override_stats=in_stats,
         )
 
-    # derive clean signal target
-    clean_shots = input_shots - noise_shots
-
     if input_cfg.get("path", "").lower().endswith((".sgy", ".segy")):
         from tools.segy_read import read_regular_shots
         _, headers = read_regular_shots(
@@ -249,15 +246,17 @@ def main() -> None:
         val_metrics: Dict[str, float] = {}
         train_metrics: Dict[str, float] = {n: float("nan") for n in metric_names}
 
-        if eval_train_loader is not None:
+        if rank == 0 and eval_train_loader is not None:
             _, train_metrics = evaluate(
                 model=model, loader=eval_train_loader, loss_fn=loss_fn,
                 metrics=metrics, device=device,
+                metrics_on_denoised_signal=True,
             )
             if (epoch + 1) % eval_interval == 0:
                 val_losses, val_metrics = evaluate(
                     model=model, loader=val_loader, loss_fn=loss_fn,
                     metrics=metrics, device=device,
+                    metrics_on_denoised_signal=True,
                 )
                 best_val_loss = maybe_save_best_checkpoint(
                     exp_dir / "checkpoints" / "best.pt",
