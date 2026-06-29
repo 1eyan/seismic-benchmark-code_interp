@@ -534,3 +534,16 @@
   - Renamed the benchmark document to `docs/benchmark_ground_roll_attenuation.md`; updated top-level README, Chinese usage guide, and HF model upload/download defaults away from the old coherent-noise task name.
 - Impact: New task directories are self-contained and no regular source/docs path references the deleted `coherent_noise_attenuation` package. `memory/updates.md` keeps older entries unchanged as historical records.
 - Follow-up: When multiples SEG-Y data is generated, verify the configured `/data/shared/benchmark/multiples` paths against the actual data root.
+
+## 2026-06-29 - Migrate EB-WSE and FB-FRE metrics from test/ to utils/
+
+- Context: The EB-WSE and FB-FRE metrics were developed under `test/` for rapid iteration. They are now stable enough to live in `utils/` alongside the other evaluation infrastructure.
+- Change:
+  - Moved `test/energy_binned_metrics.py` to `utils/eb_wse_metrics.py`.
+  - Moved `test/frequency_binned_metrics.py` to `utils/fb_fre_metrics.py`.
+  - Re-exported `energy_binned_weak_signal_metrics` from `utils/__init__.py`.
+  - Re-exported `compute_average_amplitude_spectrum`, `estimate_effective_band`, `build_auto_bands`, and `frequency_binned_fidelity_metrics` from `utils/__init__.py`.
+  - Updated `test/run_baseline_evaluation.py` to import EB-WSE and FB-FRE from `utils`.
+  - Left O-LPSL (`test/orthogonalized_local_projected_signal_leakage.py`) and the evaluation runner in `test/` for now.
+- Impact: EB-WSE and FB-FRE are now part of the maintained `utils` API and can be imported by any script in the repository. `test/run_baseline_evaluation.py` remains the primary consumer, but the metric implementations are no longer tied to the `test/` package.
+- Follow-up: Migrate O-LPSL to `utils/olpsl_metrics.py` once its interface has stabilized, and decide whether `test/run_baseline_evaluation.py` should move to `scripts/evaluation/`.
