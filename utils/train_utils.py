@@ -485,6 +485,7 @@ def evaluate(
     total_loss = 0.0
     n_batches = 0
     metric_sums: Dict[str, float] = {k: 0.0 for k in (metrics or {})}
+    metric_counts: Dict[str, int] = {k: 0 for k in (metrics or {})}
     for batch in loader:
         if isinstance(batch, (tuple, list)) and len(batch) == 2:
             x, y = batch
@@ -508,7 +509,10 @@ def evaluate(
                 pred_m, targ_m = pred, y
             batch_metrics = compute_metrics(metrics, pred_m, targ_m)
             for k, v in batch_metrics.items():
-                metric_sums[k] += float(v)
+                value = float(v)
+                if math.isfinite(value):
+                    metric_sums[k] += value
+                    metric_counts[k] += 1
 
     # Aggregate across DDP ranks when each rank evaluates a different subset.
     if distributed and torch.distributed.is_available() and torch.distributed.is_initialized():
@@ -521,13 +525,22 @@ def evaluate(
             total_loss = float(stat[0].item())
             n_batches = int(stat[1].item())
             for k in list(metric_sums.keys()):
-                s = torch.tensor([float(metric_sums[k])], device=device, dtype=torch.float64)
+                s = torch.tensor(
+                    [float(metric_sums[k]), float(metric_counts[k])],
+                    device=device,
+                    dtype=torch.float64,
+                )
                 torch.distributed.all_reduce(s, op=torch.distributed.ReduceOp.SUM)
                 metric_sums[k] = float(s[0].item())
+                metric_counts[k] = int(s[1].item())
 
     denom = max(n_batches, 1)
     losses = {"val": float(total_loss / denom)}
-    out_metrics = {k: float(v / denom) for k, v in metric_sums.items()}
+    out_metrics = {
+        k: float(metric_sums[k] / metric_counts[k])
+        if metric_counts[k] > 0 else float("nan")
+        for k in metric_sums
+    }
     return losses, out_metrics
 
 

@@ -21,7 +21,7 @@ Choose from: unet, res_unet, dncnn, atten_unet, enhanced_unet, ddpm,
               pix2pix, sanet, physics
 
 Optional:
-    --repo-id ID          HF repo ID (default: GeoBrain/coherent-noise-attenuation)
+    --repo-id ID          HF repo ID (default: GeoBrain/ground-roll-attenuation)
     --output-dir PATH     Local output directory (default: ./downloaded_models)
     --noise-levels L [L]  Only download specific noise levels (default: all)
     --seeds S [S ...]     Only download specific seeds (default: all)
@@ -49,7 +49,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DEFAULT_REPO_ID = "GeoBrain/coherent-noise-attenuation"
+DEFAULT_REPO_ID = "GeoBrain/ground-roll-attenuation"
 DEFAULT_OUTPUT_DIR = "downloaded_models"
 DEFAULT_NUM_WORKERS = 4
 

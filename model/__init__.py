@@ -5,7 +5,11 @@ Each subtask folder (``model/<task>/``) is a self-contained sub-package: its
 decorators populate the shared registry. To use a subtask's models, import
 ``build_model`` from that subtask, e.g.::
 
-    from model.coherent_noise_attenuation import build_model
+    from model.ground_roll_attenuation import build_model
+
+or::
+
+    from model.multiples_attenuation import build_model
 
 This top-level package only exposes the registry primitives plus the
 identity-forward ``placeholder`` so generic tooling can run without picking a

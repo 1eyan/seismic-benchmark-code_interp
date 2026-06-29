@@ -524,3 +524,13 @@
 - Impact: Benchmark task description is now specific and technically accurate. Batch evaluation is a single command: `python scripts/coherent_noise_attenuation/batch_evaluate.py --root_dir <results_dir> --output <output.xlsx>`.
 
 - Follow-up: Add a standalone inference script (`inference_denoise.py`) if per-shot visualization or original-amplitude-domain metrics are needed for individual checkpoints.
+
+## 2026-06-29 - Split coherent-noise attenuation task references
+
+- Context: The former `coherent_noise_attenuation` task was split into `ground_roll_attenuation` and `multiples_attenuation`; copied configs/scripts/models still contained stale imports, paths, comments, and documentation references to the old task name.
+- Change:
+  - Updated ground-roll scripts, shell launchers, model imports, README examples, and batch-evaluation defaults to use `ground_roll_attenuation`.
+  - Updated multiples scripts, shell launchers, model imports, configs, README examples, and batch-evaluation defaults to use `multiples_attenuation`; multiples model package now imports only the model files that exist in that subtask.
+  - Renamed the benchmark document to `docs/benchmark_ground_roll_attenuation.md`; updated top-level README, Chinese usage guide, and HF model upload/download defaults away from the old coherent-noise task name.
+- Impact: New task directories are self-contained and no regular source/docs path references the deleted `coherent_noise_attenuation` package. `memory/updates.md` keeps older entries unchanged as historical records.
+- Follow-up: When multiples SEG-Y data is generated, verify the configured `/data/shared/benchmark/multiples` paths against the actual data root.

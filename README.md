@@ -1,4 +1,4 @@
-# Benchmark Code — Exploration Geophysics Data Processing Benchmark Template
+# Benchmark Code - Exploration Geophysics Data Processing Benchmark Template
 
 A PyTorch benchmark template for seismic data processing, supporting interpolation, denoising, and supervised restoration on SEG-Y / NPY / MAT volumes.
 
@@ -16,14 +16,14 @@ Features:
 
 ## Directory Overview
 
-- **tools/** — Data utilities: I/O (`array_io.py`, `segy_read.py`), preprocessing (`preprocessing.py`), patching (`patching.py`).
-- **model/** — `nn.Module` definitions and `MODEL_REGISTRY`. UNet, Res-UNet, DnCNN, Attention U-Net are registered and selectable from YAML.
-- **utils/** — Training infrastructure: datasets, losses, metrics, visualization, logging, optimizer/scheduler builders, train/eval loops, DDP helpers, checkpoint I/O.
-- **configs/** — One YAML file per experiment; hyper-parameters are never hard-coded in source.
-- **scripts/** — CLI entry points for training (`train_*.py`) and inference (`inference_*.py`), plus bash launchers (`*.sh`).
-- **results/** — Experiment outputs (checkpoints, logs, CSVs, PNGs). Not tracked by Git.
-- **memory/** — Project memory: design decisions, update log, techniques, research references.
-- **.cursor/rules/** — Agent rule files (`*.mdc`).
+- **tools/** - Data utilities: I/O (`array_io.py`, `segy_read.py`), preprocessing (`preprocessing.py`), patching (`patching.py`).
+- **model/** - `nn.Module` definitions and `MODEL_REGISTRY`. Task subpackages register their own model implementations.
+- **utils/** - Training infrastructure: datasets, losses, metrics, visualization, logging, optimizer/scheduler builders, train/eval loops, DDP helpers, checkpoint I/O.
+- **configs/** - One YAML file per experiment; hyper-parameters are never hard-coded in source.
+- **scripts/** - CLI entry points for training (`train_*.py`) and inference (`inference_*.py`), plus bash launchers (`*.sh`).
+- **results/** - Experiment outputs (checkpoints, logs, CSVs, PNGs). Not tracked by Git.
+- **memory/** - Project memory: design decisions, update log, techniques, research references.
+- **.cursor/rules/** - Agent rule files (`*.mdc`).
 
 ---
 
@@ -38,8 +38,11 @@ python scripts/interpolation/train_interpolation_unet.py --config configs/interp
 # Paired supervised training (input + target volumes)
 python scripts/interpolation/train_paired_unet.py --config configs/interpolation/paired_unet.yaml
 
-# Denoising (paired noisy / clean volumes)
-python scripts/coherent_noise_attenuation/train_denoise_res_unet.py --config configs/coherent_noise_attenuation/denoise_res_unet.yaml
+# Ground-roll attenuation (paired noisy / noise-label volumes)
+python scripts/ground_roll_attenuation/train_denoise_res_unet.py --config configs/ground_roll_attenuation/denoise_res_unet.yaml
+
+# Multiples attenuation (paired noisy / noise-label volumes)
+python scripts/multiples_attenuation/train_denoise_res_unet.py --config configs/multiples_attenuation/denoise_res_unet.yaml
 
 # DDP multi-GPU
 CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 scripts/interpolation/train_interpolation_unet.py --config configs/interpolation/interpolation_unet.yaml

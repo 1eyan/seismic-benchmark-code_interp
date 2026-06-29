@@ -10,7 +10,7 @@ Choose from: unet, res_unet, dncnn, atten_unet, enhanced_unet, ddpm,
               pix2pix, sanet, physics
 
 Optional:
-    --repo-name NAME     HF repo name (default: coherent-noise-attenuation)
+    --repo-name NAME     HF repo name (default: ground-roll-attenuation)
     --results-dir PATH   Override results root (default: /data/shared/benchmark/ground_roll/results)
     --dry-run            Scan and print what would be uploaded without uploading
     --models M [M ...]   Only upload the listed model(s); default = all
@@ -32,7 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 RESULTS_ROOT = "/data/shared/benchmark/ground_roll/results_0510"
-DEFAULT_REPO = "coherent-noise-attenuation"
+DEFAULT_REPO = "ground-roll-attenuation"
 
 FOLDER_PATTERN = re.compile(
     r"denoise_(?P<model>.+)_base\d+_level(?P<level>[\d.]+)_seed(?P<seed>\d+)"
@@ -112,7 +112,7 @@ def _resolve_models(requested):
 # Default path to the batch evaluation Excel file
 BATCH_EVAL_XLSX = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "scripts", "coherent_noise_attenuation", "batch_evaluation.xlsx",
+    "scripts", "ground_roll_attenuation", "batch_evaluation.xlsx",
 )
 
 
@@ -193,7 +193,7 @@ library_name: pytorch
 
 # Ground-Roll Attenuation Benchmark
 
-Deep-learning-based coherent noise (ground roll) suppression on pre-stack seismic shot gathers, using the SEG C3 synthetic dataset.
+Deep-learning-based ground-roll suppression on pre-stack seismic shot gathers, using the SEG C3 synthetic dataset.
 
 ## Task
 
@@ -435,7 +435,7 @@ def main():
         help="Path(s) to batch evaluation Excel(s) for populating the model card.  "
              "When multiple files are given, their data is merged (later files "
              "override earlier ones for the same model at the same noise level).  "
-             "Default: scripts/coherent_noise_attenuation/batch_evaluation.xlsx",
+             "Default: scripts/ground_roll_attenuation/batch_evaluation.xlsx",
     )
     args = parser.parse_args()
 
