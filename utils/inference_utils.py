@@ -161,6 +161,100 @@ def _compute_ssim_per_shot(
     return values
 
 
+def compute_binned_metrics(
+    pred_shots: np.ndarray,
+    target_shots: np.ndarray,
+    dt: float,
+    eps: float = 1e-8,
+) -> Dict[str, Any]:
+    """Compute mean EB-WSE and FB-FRE metrics over all shots.
+
+    EB-WSE reports normalized error (``ne``) and SNR (``snr``) for the four
+    default energy percentile bins. FB-FRE estimates an effective frequency band
+    from the clean volume, splits it into adaptive low/mid/high/very_high bands,
+    and reports per-band ``ne`` and ``snr`` computed on band-pass filtered shots.
+
+    Parameters
+    ----------
+    pred_shots   : ``(n_shots, n_traces, n_time)``.
+    target_shots : same shape as ``pred_shots``.
+    dt           : time sampling interval in seconds.
+    eps          : small constant to avoid division by zero.
+
+    Returns
+    -------
+    mean : ``{metric_key: float}`` — mean over shots.
+    """
+    from .eb_wse_metrics import energy_binned_weak_signal_metrics
+    from .fb_fre_metrics import (
+        _bandpass_filter,
+        build_auto_bands,
+        estimate_effective_band,
+    )
+
+    if pred_shots.shape != target_shots.shape:
+        raise ValueError(
+            f"Shape mismatch: pred {pred_shots.shape} vs target {target_shots.shape}."
+        )
+
+    n_shots = pred_shots.shape[0]
+    pred = pred_shots.astype(np.float64, copy=False)
+    tgt = target_shots.astype(np.float64, copy=False)
+
+    # EB-WSE: default energy percentile bins.
+    eb_bins = ((5, 20), (20, 40), (40, 70), (70, 100))
+    eb_keys = ["very_weak_5_20", "weak_20_40", "medium_40_70", "strong_70_100"]
+    eb_sums: Dict[str, Dict[str, float]] = {
+        key: {"ne": 0.0, "snr": 0.0} for key in eb_keys
+    }
+
+    # FB-FRE: estimate effective band on the full clean volume and reuse bands per shot.
+    f_min, f_max = estimate_effective_band(tgt, dt=dt, rel_threshold=0.001)
+    bands = build_auto_bands(f_min, f_max)
+    fb_sums: Dict[str, Dict[str, float]] = {
+        band_name: {"ne": 0.0, "snr": 0.0, "energy_ratio": 0.0} for band_name, _ in bands
+    }
+
+    for i in range(n_shots):
+        eb_result = energy_binned_weak_signal_metrics(
+            tgt[i], pred[i], bins=eb_bins, eps=eps
+        )
+        for key in eb_keys:
+            eb_sums[key]["ne"] += eb_result[key]["NE"]
+            eb_sums[key]["snr"] += eb_result[key]["SNR"]
+
+        total_energy = float(np.sum(tgt[i] ** 2))
+        for band_name, (fmin, fmax) in bands:
+            ref_band = _bandpass_filter(tgt[i], dt, fmin, fmax)
+            pred_band = _bandpass_filter(pred[i], dt, fmin, fmax)
+            diff = pred_band - ref_band
+            ref_energy = float(np.sum(ref_band ** 2))
+            err_energy = float(np.sum(diff ** 2))
+            ne = float(np.sqrt(err_energy) / (np.sqrt(ref_energy) + eps))
+            snr = float(10.0 * np.log10(ref_energy / (err_energy + eps)))
+            energy_ratio = float(ref_energy / (total_energy + eps))
+            fb_sums[band_name]["ne"] += ne
+            fb_sums[band_name]["snr"] += snr
+            fb_sums[band_name]["energy_ratio"] += energy_ratio
+
+    mean: Dict[str, float] = {}
+    for key in eb_keys:
+        mean[f"eb_wse_{key}_ne"] = round(eb_sums[key]["ne"] / n_shots, 6)
+        mean[f"eb_wse_{key}_snr"] = round(eb_sums[key]["snr"] / n_shots, 6)
+    for band_name, (fmin, fmax) in bands:
+        mean[f"fb_fre_{band_name}_ne"] = round(fb_sums[band_name]["ne"] / n_shots, 6)
+        mean[f"fb_fre_{band_name}_snr"] = round(fb_sums[band_name]["snr"] / n_shots, 6)
+        mean[f"fb_fre_{band_name}_energy_ratio"] = round(
+            fb_sums[band_name]["energy_ratio"] / n_shots, 6
+        )
+        mean[f"fb_fre_{band_name}_frequency_range_hz"] = [
+            round(float(fmin), 4),
+            round(float(fmax), 4),
+        ]
+
+    return mean
+
+
 def select_random_shots(
     n_shots: int, n_select: int, seed: Optional[int] = None
 ) -> np.ndarray:

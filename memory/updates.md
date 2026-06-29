@@ -545,5 +545,13 @@
   - Re-exported `compute_average_amplitude_spectrum`, `estimate_effective_band`, `build_auto_bands`, and `frequency_binned_fidelity_metrics` from `utils/__init__.py`.
   - Updated `test/run_baseline_evaluation.py` to import EB-WSE and FB-FRE from `utils`.
   - Left O-LPSL (`test/orthogonalized_local_projected_signal_leakage.py`) and the evaluation runner in `test/` for now.
-- Impact: EB-WSE and FB-FRE are now part of the maintained `utils` API and can be imported by any script in the repository. `test/run_baseline_evaluation.py` remains the primary consumer, but the metric implementations are no longer tied to the `test/` package.
-- Follow-up: Migrate O-LPSL to `utils/olpsl_metrics.py` once its interface has stabilized, and decide whether `test/run_baseline_evaluation.py` should move to `scripts/evaluation/`.
+## 2026-06-29 - Add EB-WSE and FB-FRE metrics to random_noise_suppression inference scripts
+
+- Context: The random_noise_suppression inference scripts only reported the six scalar reconstruction metrics (MSE, RMSE, MAE, SNR, PSNR, SSIM). Users need energy-binned and frequency-binned diagnostics to assess weak-signal recovery and frequency preservation.
+- Change:
+  - Added `compute_binned_metrics(pred_shots, target_shots, dt)` to `utils/inference_utils.py`. It computes EB-WSE (NE/SNR per energy bin) and FB-FRE (NE/SNR per adaptive frequency band) using the migrated `utils/eb_wse_metrics.py` and `utils/fb_fre_metrics.py` modules, then returns the mean over all shots. FB-FRE uses `rel_threshold=0.001` (0.1% of peak power) to define the effective frequency band.
+  - Updated all five `scripts/random_noise_suppression/inference_denoise_*.py` scripts (UNet, DnCNN, ResUNet, Attention UNet, SCRN) to call `compute_binned_metrics` for both the noisy baseline and the denoised result, compute deltas (denoised - noisy), and merge the mean binned metrics into `metrics_summary.json`.
+  - Flattened binned metric keys for JSON compatibility: `eb_wse_very_weak_5_20_ne`, `eb_wse_very_weak_5_20_snr`, `fb_fre_low_ne`, `fb_fre_low_snr`, `fb_fre_low_energy_ratio`, `fb_fre_low_frequency_range_hz`, etc.
+- Impact: Every random-noise-suppression inference run now automatically outputs mean EB-WSE and FB-FRE diagnostics alongside scalar metrics in `metrics_summary.json`, without requiring config changes or adding per-shot CSV columns. O-LPSL remains excluded per the current scope.
+- Follow-up: Consider exposing optional energy-bin and frequency-band overrides via YAML or CLI if users need per-dataset customization.
+

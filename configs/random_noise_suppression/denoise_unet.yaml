@@ -1,13 +1,13 @@
 experiment:
   name: random_noise_unet_base
-  output_dir: /root/Desktop/data/results/random_noise       # Relative to repo root, or absolute (e.g., /data/experiments)
+  output_dir: results/random_noise       # Relative to repo root, or absolute (e.g., /data/experiments)
   seed: 42
   device: cuda
 
 data:
   # Supported formats: segy, npy, mat (pick one block)
   segy:
-    path: /root/Desktop/data/SEG_45Shot_shots1-9.sgy
+    path: /data/liuqi/code/Seismic-bench/seismic-benchmark-code/data/SEG_45Shot_shots1-9.sgy
     traces_per_shot: 201
     time_downsample: 1
   # npy:
@@ -29,7 +29,7 @@ data:
     pin_memory: true
 
 preprocess:
-  dt: 0.002
+  dt: 0.008
   t0: 0.0
   spherical_power: 0
   noise_kind: gaussian   # "gaussian" | "poisson"; train_denoise_unet.sh may overwrite this per run.
@@ -101,15 +101,15 @@ inference:
   # denoising, and inverse transforms for visualization.
   data:
     segy:
-      path: /root/Desktop/data/SEG_45Shot_shots1-9.sgy
+      path: /data/liuqi/code/Seismic-bench/seismic-benchmark-code/data/SEG_45Shot_shots1-9.sgy
       traces_per_shot: 201
       time_downsample: 1
   shot_split:
     train: 7
     val: 1
     test: 1
-  checkpoint: /root/Desktop/data/results/random_noise/random_noise_unet_base/checkpoints/best.pt
-  output_dir: /root/Desktop/data/results/random_noise/random_noise_unet_base/inference
+  checkpoint: /data/liuqi/code/Seismic-bench/seismic-benchmark-code-main/result/checkpoint/best.pt
+  output_dir: results/random_noise/random_noise_unet_base/inference
   n_viz_shots: 5
   # batch_size: null    # null -> use data.loader.batch_size
   # save_npy: false     # true -> save pred/input/target as .npy
