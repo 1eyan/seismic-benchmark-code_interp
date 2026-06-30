@@ -340,11 +340,16 @@ def main() -> None:
     noisy_binned_mean = compute_binned_metrics(noisy_norm, shots_norm, dt=dt)
     denoised_binned_mean = compute_binned_metrics(pred_norm, shots_norm, dt=dt)
 
-    delta_binned_mean = {
-        key: round(denoised_binned_mean[key] - noisy_binned_mean[key], 6)
-        for key in noisy_binned_mean
-        if not key.endswith("_frequency_range_hz") and not key.endswith("_energy_ratio")
-    }
+    delta_binned_mean: Dict[str, Optional[float]] = {}
+    for key in noisy_binned_mean:
+        if key.endswith("_frequency_range_hz") or key.endswith("_energy_ratio"):
+            continue
+        n = noisy_binned_mean[key]
+        d = denoised_binned_mean[key]
+        if n is None or d is None:
+            delta_binned_mean[key] = None
+        else:
+            delta_binned_mean[key] = round(d - n, 6)
 
     noisy_mean.update(noisy_binned_mean)
     denoised_mean.update(denoised_binned_mean)
@@ -433,18 +438,24 @@ def main() -> None:
     for k, v in noisy_mean.items():
         if isinstance(v, list):
             print(f"    {k}: {v}")
+        elif v is None:
+            print(f"    {k}: N/A")
         else:
             print(f"    {k}: {format_metric_value(k, v)}")
     print("  Denoised vs target:")
     for k, v in denoised_mean.items():
         if isinstance(v, list):
             print(f"    {k}: {v}")
+        elif v is None:
+            print(f"    {k}: N/A")
         else:
             print(f"    {k}: {format_metric_value(k, v)}")
     print("  Delta (denoised - noisy):")
     for k, v in delta_mean.items():
         if isinstance(v, list):
             print(f"    {k}: {v}")
+        elif v is None:
+            print(f"    {k}: N/A")
         else:
             print(f"    {k}: {format_metric_value(k, v)}")
 

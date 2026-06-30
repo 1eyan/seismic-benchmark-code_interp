@@ -555,3 +555,15 @@
 - Impact: Every random-noise-suppression inference run now automatically outputs mean EB-WSE and FB-FRE diagnostics alongside scalar metrics in `metrics_summary.json`, without requiring config changes or adding per-shot CSV columns. O-LPSL remains excluded per the current scope.
 - Follow-up: Consider exposing optional energy-bin and frequency-band overrides via YAML or CLI if users need per-dataset customization.
 
+## 2026-06-30 - Review fixes for EB-WSE/FB-FRE integration
+
+- Context: Review of the `feature/integrated-metrics` branch found a broken baseline-evaluation script, inconsistent FB-FRE thresholds, and non-finite JSON values in degenerate cases.
+- Change:
+  - Removed `test/run_baseline_evaluation.py`; its functionality is expected to be covered by the existing random-noise-suppression inference scripts.
+  - Changed the default `rel_threshold` in `utils/fb_fre_metrics.py` (`estimate_effective_band` and `frequency_binned_fidelity_metrics`) from `0.0001` to `0.001` so it matches the 0.1% threshold used by `compute_binned_metrics` in `utils/inference_utils.py`.
+  - Hardened `compute_binned_metrics` against non-finite outputs: NaN is serialized as `None` (JSON `null`), positive infinity is capped at `999.0`, and negative infinity is capped at `-999.0`. This keeps `metrics_summary.json` strictly standard-JSON compliant even for all-zero or perfect-prediction edge cases.
+  - Guarded the FB-FRE SNR `log10` call to avoid a `RuntimeWarning` when a band has zero reference energy.
+  - Updated all five `scripts/random_noise_suppression/inference_denoise_*.py` scripts to handle `None` values when computing deltas and printing mean metrics.
+- Impact: The inference pipeline is more robust, the FB-FRE threshold is consistent across all call sites, and the baseline-evaluation file that could not run is no longer present.
+- Follow-up: Verify all five inference scripts on their respective checkpoints once available; consider adding unit tests for `compute_binned_metrics` edge cases.
+

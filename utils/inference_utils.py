@@ -183,7 +183,8 @@ def compute_binned_metrics(
 
     Returns
     -------
-    mean : ``{metric_key: float}`` — mean over shots.
+    mean : ``{metric_key: float | list | None}`` — mean over shots. Non-finite
+           values are replaced with ``None`` so the result is JSON-serializable.
     """
     from .eb_wse_metrics import energy_binned_weak_signal_metrics
     from .fb_fre_metrics import (
@@ -200,6 +201,20 @@ def compute_binned_metrics(
     n_shots = pred_shots.shape[0]
     pred = pred_shots.astype(np.float64, copy=False)
     tgt = target_shots.astype(np.float64, copy=False)
+
+    def _sanitize_for_json(value: float) -> Optional[float]:
+        """Cap infinities and replace NaN so JSON output stays standard.
+
+        ``inf`` /
+        ``-inf`` are replaced with large finite caps; ``nan`` becomes ``None``.
+        """
+        if np.isnan(value):
+            return None
+        if np.isposinf(value):
+            return 999.0
+        if np.isneginf(value):
+            return -999.0
+        return value
 
     # EB-WSE: default energy percentile bins.
     eb_bins = ((5, 20), (20, 40), (40, 70), (70, 100))
@@ -231,21 +246,32 @@ def compute_binned_metrics(
             ref_energy = float(np.sum(ref_band ** 2))
             err_energy = float(np.sum(diff ** 2))
             ne = float(np.sqrt(err_energy) / (np.sqrt(ref_energy) + eps))
-            snr = float(10.0 * np.log10(ref_energy / (err_energy + eps)))
+            if ref_energy > 0.0:
+                snr = float(10.0 * np.log10(ref_energy / (err_energy + eps)))
+            else:
+                snr = float("-inf")
             energy_ratio = float(ref_energy / (total_energy + eps))
             fb_sums[band_name]["ne"] += ne
             fb_sums[band_name]["snr"] += snr
             fb_sums[band_name]["energy_ratio"] += energy_ratio
 
-    mean: Dict[str, float] = {}
+    mean: Dict[str, Any] = {}
     for key in eb_keys:
-        mean[f"eb_wse_{key}_ne"] = round(eb_sums[key]["ne"] / n_shots, 6)
-        mean[f"eb_wse_{key}_snr"] = round(eb_sums[key]["snr"] / n_shots, 6)
+        mean[f"eb_wse_{key}_ne"] = _sanitize_for_json(
+            round(eb_sums[key]["ne"] / n_shots, 6)
+        )
+        mean[f"eb_wse_{key}_snr"] = _sanitize_for_json(
+            round(eb_sums[key]["snr"] / n_shots, 6)
+        )
     for band_name, (fmin, fmax) in bands:
-        mean[f"fb_fre_{band_name}_ne"] = round(fb_sums[band_name]["ne"] / n_shots, 6)
-        mean[f"fb_fre_{band_name}_snr"] = round(fb_sums[band_name]["snr"] / n_shots, 6)
-        mean[f"fb_fre_{band_name}_energy_ratio"] = round(
-            fb_sums[band_name]["energy_ratio"] / n_shots, 6
+        mean[f"fb_fre_{band_name}_ne"] = _sanitize_for_json(
+            round(fb_sums[band_name]["ne"] / n_shots, 6)
+        )
+        mean[f"fb_fre_{band_name}_snr"] = _sanitize_for_json(
+            round(fb_sums[band_name]["snr"] / n_shots, 6)
+        )
+        mean[f"fb_fre_{band_name}_energy_ratio"] = _sanitize_for_json(
+            round(fb_sums[band_name]["energy_ratio"] / n_shots, 6)
         )
         mean[f"fb_fre_{band_name}_frequency_range_hz"] = [
             round(float(fmin), 4),

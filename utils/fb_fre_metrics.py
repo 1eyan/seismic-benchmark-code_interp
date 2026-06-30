@@ -65,7 +65,7 @@ def estimate_effective_band(
     dt: float,
     axis: int = -1,
     method: str = "threshold",
-    rel_threshold: float = 0.0001,
+    rel_threshold: float = 0.001,
     cumulative_ratio: float = 0.95,
 ) -> Tuple[float, float]:
     """Estimate the effective frequency band of ``reference``.
@@ -230,7 +230,7 @@ def frequency_binned_fidelity_metrics(
     bands: Sequence[Tuple[str, Tuple[float, float]]] | str | None = None,
     axis: int = -1,
     taper_width: float = 0.0,
-    rel_threshold: float = 0.0001,
+    rel_threshold: float = 0.001,
     eps: float = 1e-8,
 ) -> Dict[str, Dict[str, Any]]:
     """Compute frequency-binned fidelity and recovery evaluation metrics.
