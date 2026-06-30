@@ -567,3 +567,13 @@
 - Impact: The inference pipeline is more robust, the FB-FRE threshold is consistent across all call sites, and the baseline-evaluation file that could not run is no longer present.
 - Follow-up: Verify all five inference scripts on their respective checkpoints once available; consider adding unit tests for `compute_binned_metrics` edge cases.
 
+## 2026-06-30 - Update READMEs to match latest code
+
+- Context: The root `README.md`, `scripts/README.md`, and `utils/README.md` did not reflect the current random-noise suppression inference scripts or the EB-WSE/FB-FRE diagnostics.
+- Change:
+  - Updated `README.md` to list random-noise suppression training/inference examples and to mention EB-WSE/FB-FRE diagnostics in the feature list and inference section.
+  - Rewrote `scripts/README.md` to describe the actual task-specific scripts (interpolation, random-noise suppression, ground-roll attenuation, multiples attenuation, first-break picking) and added an inference section documenting `metrics_summary.json` outputs.
+  - Updated `utils/README.md` to include `inference_utils.py` and its helpers (`inference_on_shots`, `compute_shot_metrics`, `compute_binned_metrics`).
+- Impact: READMEs now match the current codebase and guide users to the new inference metrics.
+- Follow-up: Keep READMEs in sync when adding new task scripts or inference outputs.
+
