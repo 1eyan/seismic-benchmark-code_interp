@@ -28,19 +28,54 @@ data:
     num_workers: 4
     pin_memory: true
 
+# Preprocessing pipeline applied to the raw volume before training / inference.
+# The inference scripts read the same block, so training and inference must agree
+# on these values.
 preprocess:
+  # Time sampling interval in seconds. Must match the source data. It is used for
+  # spherical divergence correction and for FB-FRE frequency estimation.
   dt: 0.008
+
+  # Reference time offset for the spherical divergence gain: gain = (t + t0) ** power.
+  # Only used when spherical_divergence_correction is not in skip.
   t0: 0.0
+
+  # Power for the spherical divergence correction. Set to 0 and add the step to
+  # skip to disable it entirely.
   spherical_power: 0
-  noise_kind: gaussian   # "gaussian" | "poisson"; train_denoise_unet.sh may overwrite this per run.
-  snr_db: 5.0            # Default only; train_denoise_unet.sh may overwrite this per run.
+
+  # Synthetic noise injected for random-noise suppression. "gaussian" | "poisson".
+  # The shell launchers may override this per run.
+  noise_kind: gaussian
+
+  # Target SNR of the injected noise in dB. Smaller values mean stronger noise.
+  # The shell launchers may override this per run.
+  snr_db: 5.0
+
+  # Normalization applied before the model. Must match between train and inference.
+  # "max_abs" -> [-1, 1]; "minmax" -> [0, 1]; "mean_std" -> zero mean, unit variance.
   normalize_mode: max_abs
+
+  # Scope for normalization statistics: "shot", "trace", or "global".
   normalize_scope: shot
-  patch_time: 256     # time axis
-  patch_trace: 128    # trace axis
+
+  # Patch size along the time axis. Each shot is tiled into overlapping patches
+  # for the 2D conv model.
+  patch_time: 256
+
+  # Patch size along the trace (spatial) axis.
+  patch_trace: 128
+
+  # Overlap ratio between adjacent patches during inference. 0.0 means no overlap.
   patch_overlap: 0.5
-  max_shots: null     # set int for quick debug
-  skip: ["spherical_divergence_correction"]           # optional: list steps to skip, e.g. ["spherical_divergence_correction", "normalize", "add_noise"]
+
+  # Limit the number of shots for quick smoke tests. null = use all shots.
+  max_shots: null
+
+  # Preprocessing steps to skip. Common examples:
+  # ["spherical_divergence_correction"]
+  # ["spherical_divergence_correction", "normalize", "add_noise"]
+  skip: ["spherical_divergence_correction"]
 
 model:
   type: unet
@@ -55,6 +90,9 @@ loss:
   params:
     reduction: mean
 
+# Validation metrics. These are computed per shot during training and inference.
+# data_range must match the normalization mode: max_abs -> 2.0 for SSIM and 1.0
+# for PSNR peak; minmax -> 1.0 for SSIM and 1.0 for PSNR peak.
 metrics:
   - name: snr
     params: { reduction: per_sample }
@@ -96,9 +134,9 @@ log:
 
 
 inference:
-  # Inference re-loads the raw volume, then applies this shot-level split to
-  # select the held-out test shots before preprocessing, noise injection,
-  # denoising, and inverse transforms for visualization.
+  # Inference reloads the raw volume, applies the same shot-level split as training,
+  # then runs preprocessing, synthetic noise injection, denoising, and inverse
+  # transforms before saving metrics and visualizations.
   data:
     segy:
       path: /data/liuqi/code/Seismic-bench/seismic-benchmark-code/data/SEG_45Shot_shots1-9.sgy
@@ -108,11 +146,53 @@ inference:
     train: 7
     val: 1
     test: 1
+
+  # Path to the model checkpoint used for inference. Usually results/<exp>/checkpoints/best.pt.
   checkpoint: /data/liuqi/code/Seismic-bench/seismic-benchmark-code-main/result/checkpoint/best.pt
+
+  # Directory where metrics_summary.json, metrics_per_shot.csv, and visualizations/ are written.
   output_dir: results/random_noise/random_noise_unet_base/inference
+
+  # Number of random shots to save as PNG visualizations.
   n_viz_shots: 5
-  # batch_size: null    # null -> use data.loader.batch_size
-  # save_npy: false     # true -> save pred/input/target as .npy
-  # seed: null          # null -> use experiment.seed
+
+  # Inference batch size. null -> fall back to data.loader.batch_size.
+  # batch_size: null
+
+  # Save pred/input/target arrays as .npy when true.
+  # save_npy: false
+
+  # Random seed for shot selection. null -> use experiment.seed.
+  # seed: null
+
+  # Device for inference, e.g. "cuda:0" or "cpu".
   device: cuda:0
   batch_size: 192
+
+  # Energy-binned (EB-WSE) and frequency-binned (FB-FRE) diagnostics.
+  # Both are computed on the normalized domain and written to metrics_summary.json.
+  binned_metrics:
+    # Master switch. Set to false to skip all binned diagnostics.
+    enabled: true
+
+    eb_wse:
+      # Switch for energy-binned weak-signal evaluation.
+      enabled: true
+      # Energy percentile bins as [low, high] pairs. Custom pairs produce keys like
+      # eb_wse_bin_10_30_ne instead of the default names.
+      bins: [[5, 20], [20, 40], [40, 70], [70, 100]]
+      # Gaussian smoothing sigma for the energy map. 0.0 disables smoothing.
+      smooth_sigma: 1.0
+
+    fb_fre:
+      # Switch for frequency-binned fidelity evaluation.
+      enabled: true
+      # Effective-band threshold: a frequency is kept if its average power is at
+      # least rel_threshold * peak_power. Default 0.001 = 0.1% of peak power.
+      rel_threshold: 0.001
+      # Relative widths of the low/mid/high/very_high bands. Must sum to 1.0.
+      band_ratios: [0.20, 0.30, 0.30, 0.20]
+      # Names assigned to each adaptive band in the JSON output.
+      band_names: ["low", "mid", "high", "very_high"]
+      # Cosine taper width in Hz at band edges. 0.0 = rectangular passband.
+      taper_width: 0.0

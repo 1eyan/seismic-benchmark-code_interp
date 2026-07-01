@@ -577,3 +577,46 @@
 - Impact: READMEs now match the current codebase and guide users to the new inference metrics.
 - Follow-up: Keep READMEs in sync when adding new task scripts or inference outputs.
 
+## 2026-06-30 - Add EB-WSE and FB-FRE metric documentation
+- Context: The EB-WSE and FB-FRE metrics were integrated into the random-noise suppression inference scripts, but their formulas, output keys, and interpretation were not documented outside the source code.
+- Change:
+  - Added `docs/metrics/eb_wse.md` with the energy-map construction, default percentile bins, NE/SNR formulas, output key naming, and interpretation guide.
+  - Added `docs/metrics/fb_fre.md` with the effective-band estimation, adaptive band splitting, band-pass filtering, NE/SNR/energy-ratio formulas, output key naming, and interpretation guide.
+  - Appended EB-WSE and FB-FRE entries to `memory/techniques.md` as landed techniques, including use case, location, reference, and known limits.
+- Impact: Contributors and users can now read standalone metric documentation without reverse-engineering `utils/eb_wse_metrics.py` or `utils/fb_fre_metrics.py`.
+- Follow-up: Update the docs if the default bins, band ratios, or reported statistics change in the future.
+
+## 2026-06-30 - Add Chinese metric explanation documents
+- Context: The English metric docs were added, but the user requested Chinese versions for easier local reading alongside the existing `使用说明.md`.
+- Change:
+  - Added `docs/metrics/eb_wse_cn.md` — Chinese translation of the EB-WSE formulas, algorithm, output keys, and interpretation guide.
+  - Added `docs/metrics/fb_fre_cn.md` — Chinese translation of the FB-FRE formulas, effective-band estimation, adaptive band splitting, output keys, and interpretation guide.
+- Impact: Chinese-speaking users can read the metric definitions directly without switching languages.
+- Follow-up: Keep Chinese docs in sync with the English versions when formulas or defaults change.
+
+## 2026-07-01 - Make EB-WSE/FB-FRE inference metrics configurable via YAML
+- Context: The EB-WSE/FB-FRE diagnostics in `utils/inference_utils.py::compute_binned_metrics` used hard-coded bins, thresholds, and band ratios, and could not be disabled without editing code.
+- Change:
+  - Extended `compute_binned_metrics` to accept keyword arguments: `eb_enabled`, `eb_bins`, `eb_smooth_sigma`, `fb_enabled`, `fb_rel_threshold`, `fb_band_ratios`, `fb_band_names`, `fb_taper_width`. Missing arguments keep the previous defaults, preserving backward compatibility.
+  - Added `build_binned_metric_kwargs(infer_cfg)` helper in `utils/inference_utils.py` to parse the `inference.binned_metrics` YAML block and convert it into the keyword arguments expected by `compute_binned_metrics`.
+  - Updated all five `scripts/random_noise_suppression/inference_denoise_*.py` scripts to call `build_binned_metric_kwargs(infer_cfg)` and forward the resulting kwargs to both noisy-baseline and denoised binned-metric computations.
+  - Added `inference.binned_metrics` blocks to all five `configs/random_noise_suppression/denoise_*.yaml` files, explicitly declaring `enabled`, `eb_wse` bins/smooth_sigma, and `fb_fre` threshold/ratios/names/taper_width.
+  - Updated English (`docs/metrics/eb_wse.md`, `docs/metrics/fb_fre.md`) and Chinese (`docs/metrics/eb_wse_cn.md`, `docs/metrics/fb_fre_cn.md`) metric documentation with configuration examples.
+- Impact: EB-WSE/FB-FRE parameters are now first-class YAML hyper-parameters. Users can turn either diagnostic on/off, change energy bins, adjust the effective-band threshold, or redefine frequency-band widths without modifying source code.
+- Follow-up: Consider exposing a top-level CLI override (e.g. `--disable-binned-metrics`) if users frequently need to toggle these at runtime.
+
+## 2026-07-01 - Fix SyntaxError in `utils/inference_utils.py`
+- Context: The previous edit to insert `build_binned_metric_kwargs` accidentally removed the `def select_random_shots(` prefix, causing an `unmatched ')'` SyntaxError on import.
+- Change:
+  - Restored the complete `def select_random_shots(...)` function signature in `utils/inference_utils.py`.
+- Impact: The five random-noise suppression inference scripts can import `utils.inference_utils` again.
+- Follow-up: None.
+
+## 2026-07-01 - Add detailed comments to random_noise_suppression configs
+- Context: The five `configs/random_noise_suppression/denoise_*.yaml` files had minimal inline comments, making it hard to see how key parameters affect training, inference, and the new binned metrics.
+- Change:
+  - Added block-level comments to `preprocess`, `metrics`, and `inference` sections in all five configs.
+  - Documented the meaning and units of `dt`, `noise_kind`, `snr_db`, `normalize_mode`, `normalize_scope`, patch sizes, `patch_overlap`, `skip`, and the relationship between normalization and PSNR/SSIM `data_range`.
+  - Added detailed comments for the `inference.binned_metrics` block: master switch, EB-WSE bins/smooth_sigma, and FB-FRE `rel_threshold`, `band_ratios`, `band_names`, `taper_width`.
+- Impact: Users can now understand and tune the configs without reading the source code.
+- Follow-up: Keep comments updated when defaults or config schema change.

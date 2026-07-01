@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -165,33 +165,47 @@ def compute_binned_metrics(
     pred_shots: np.ndarray,
     target_shots: np.ndarray,
     dt: float,
+    *,
+    eb_enabled: bool = True,
+    eb_bins: Sequence[Tuple[int, int]] = ((5, 20), (20, 40), (40, 70), (70, 100)),
+    eb_smooth_sigma: float = 1.0,
+    fb_enabled: bool = True,
+    fb_rel_threshold: float = 0.001,
+    fb_band_ratios: Sequence[float] = (0.20, 0.30, 0.30, 0.20),
+    fb_band_names: Sequence[str] = ("low", "mid", "high", "very_high"),
+    fb_taper_width: float = 0.0,
     eps: float = 1e-8,
 ) -> Dict[str, Any]:
     """Compute mean EB-WSE and FB-FRE metrics over all shots.
 
-    EB-WSE reports normalized error (``ne``) and SNR (``snr``) for the four
-    default energy percentile bins. FB-FRE estimates an effective frequency band
-    from the clean volume, splits it into adaptive low/mid/high/very_high bands,
-    and reports per-band ``ne`` and ``snr`` computed on band-pass filtered shots.
+    EB-WSE reports normalized error (``ne``) and SNR (``snr``) per energy
+    percentile bin. FB-FRE estimates an effective frequency band from the clean
+    volume, splits it into adaptive bands, and reports per-band ``ne``,
+    ``snr``, and an energy ratio computed on band-pass filtered shots.
 
     Parameters
     ----------
-    pred_shots   : ``(n_shots, n_traces, n_time)``.
-    target_shots : same shape as ``pred_shots``.
-    dt           : time sampling interval in seconds.
-    eps          : small constant to avoid division by zero.
+    pred_shots       : ``(n_shots, n_traces, n_time)``.
+    target_shots     : same shape as ``pred_shots``.
+    dt               : time sampling interval in seconds.
+    eb_enabled       : whether to compute EB-WSE diagnostics.
+    eb_bins          : sequence of ``(low_percentile, high_percentile)`` tuples.
+    eb_smooth_sigma  : Gaussian smoothing sigma for the EB-WSE energy map.
+    fb_enabled       : whether to compute FB-FRE diagnostics.
+    fb_rel_threshold : fraction of peak power used to define the effective band.
+    fb_band_ratios   : relative widths of the adaptive FB-FRE bands; must sum to 1.
+    fb_band_names    : name for each adaptive FB-FRE band.
+    fb_taper_width   : cosine taper width in Hz at band edges; ``0.0`` is rectangular.
+    eps              : small constant to avoid division by zero.
 
     Returns
     -------
     mean : ``{metric_key: float | list | None}`` — mean over shots. Non-finite
            values are replaced with ``None`` so the result is JSON-serializable.
+           Empty when both EB-WSE and FB-FRE are disabled.
     """
-    from .eb_wse_metrics import energy_binned_weak_signal_metrics
-    from .fb_fre_metrics import (
-        _bandpass_filter,
-        build_auto_bands,
-        estimate_effective_band,
-    )
+    if not eb_enabled and not fb_enabled:
+        return {}
 
     if pred_shots.shape != target_shots.shape:
         raise ValueError(
@@ -205,8 +219,8 @@ def compute_binned_metrics(
     def _sanitize_for_json(value: float) -> Optional[float]:
         """Cap infinities and replace NaN so JSON output stays standard.
 
-        ``inf`` /
-        ``-inf`` are replaced with large finite caps; ``nan`` becomes ``None``.
+        ``inf`` / ``-inf`` are replaced with large finite caps; ``nan`` becomes
+        ``None``.
         """
         if np.isnan(value):
             return None
@@ -216,69 +230,156 @@ def compute_binned_metrics(
             return -999.0
         return value
 
-    # EB-WSE: default energy percentile bins.
-    eb_bins = ((5, 20), (20, 40), (40, 70), (70, 100))
-    eb_keys = ["very_weak_5_20", "weak_20_40", "medium_40_70", "strong_70_100"]
-    eb_sums: Dict[str, Dict[str, float]] = {
-        key: {"ne": 0.0, "snr": 0.0} for key in eb_keys
-    }
-
-    # FB-FRE: estimate effective band on the full clean volume and reuse bands per shot.
-    f_min, f_max = estimate_effective_band(tgt, dt=dt, rel_threshold=0.001)
-    bands = build_auto_bands(f_min, f_max)
-    fb_sums: Dict[str, Dict[str, float]] = {
-        band_name: {"ne": 0.0, "snr": 0.0, "energy_ratio": 0.0} for band_name, _ in bands
-    }
-
-    for i in range(n_shots):
-        eb_result = energy_binned_weak_signal_metrics(
-            tgt[i], pred[i], bins=eb_bins, eps=eps
-        )
-        for key in eb_keys:
-            eb_sums[key]["ne"] += eb_result[key]["NE"]
-            eb_sums[key]["snr"] += eb_result[key]["SNR"]
-
-        total_energy = float(np.sum(tgt[i] ** 2))
-        for band_name, (fmin, fmax) in bands:
-            ref_band = _bandpass_filter(tgt[i], dt, fmin, fmax)
-            pred_band = _bandpass_filter(pred[i], dt, fmin, fmax)
-            diff = pred_band - ref_band
-            ref_energy = float(np.sum(ref_band ** 2))
-            err_energy = float(np.sum(diff ** 2))
-            ne = float(np.sqrt(err_energy) / (np.sqrt(ref_energy) + eps))
-            if ref_energy > 0.0:
-                snr = float(10.0 * np.log10(ref_energy / (err_energy + eps)))
-            else:
-                snr = float("-inf")
-            energy_ratio = float(ref_energy / (total_energy + eps))
-            fb_sums[band_name]["ne"] += ne
-            fb_sums[band_name]["snr"] += snr
-            fb_sums[band_name]["energy_ratio"] += energy_ratio
-
     mean: Dict[str, Any] = {}
-    for key in eb_keys:
-        mean[f"eb_wse_{key}_ne"] = _sanitize_for_json(
-            round(eb_sums[key]["ne"] / n_shots, 6)
+
+    if eb_enabled:
+        from .eb_wse_metrics import energy_binned_weak_signal_metrics
+
+        # Run one shot to discover the bin keys (default keys are named; custom
+        # keys follow ``bin_low_high``).
+        eb_sample = energy_binned_weak_signal_metrics(
+            tgt[0], pred[0], bins=eb_bins, smooth_sigma=eb_smooth_sigma, eps=eps
         )
-        mean[f"eb_wse_{key}_snr"] = _sanitize_for_json(
-            round(eb_sums[key]["snr"] / n_shots, 6)
+        eb_keys = list(eb_sample.keys())
+        eb_sums: Dict[str, Dict[str, float]] = {
+            key: {"ne": 0.0, "snr": 0.0} for key in eb_keys
+        }
+
+        for i in range(n_shots):
+            eb_result = energy_binned_weak_signal_metrics(
+                tgt[i], pred[i], bins=eb_bins, smooth_sigma=eb_smooth_sigma, eps=eps
+            )
+            for key in eb_keys:
+                eb_sums[key]["ne"] += eb_result[key]["NE"]
+                eb_sums[key]["snr"] += eb_result[key]["SNR"]
+
+        for key in eb_keys:
+            mean[f"eb_wse_{key}_ne"] = _sanitize_for_json(
+                round(eb_sums[key]["ne"] / n_shots, 6)
+            )
+            mean[f"eb_wse_{key}_snr"] = _sanitize_for_json(
+                round(eb_sums[key]["snr"] / n_shots, 6)
+            )
+
+    if fb_enabled:
+        from .fb_fre_metrics import (
+            _bandpass_filter,
+            build_auto_bands,
+            estimate_effective_band,
         )
-    for band_name, (fmin, fmax) in bands:
-        mean[f"fb_fre_{band_name}_ne"] = _sanitize_for_json(
-            round(fb_sums[band_name]["ne"] / n_shots, 6)
+
+        # Estimate effective band on the full clean volume and reuse bands per shot.
+        f_min, f_max = estimate_effective_band(
+            tgt, dt=dt, rel_threshold=fb_rel_threshold
         )
-        mean[f"fb_fre_{band_name}_snr"] = _sanitize_for_json(
-            round(fb_sums[band_name]["snr"] / n_shots, 6)
+        bands = build_auto_bands(
+            f_min, f_max, ratios=fb_band_ratios, names=fb_band_names
         )
-        mean[f"fb_fre_{band_name}_energy_ratio"] = _sanitize_for_json(
-            round(fb_sums[band_name]["energy_ratio"] / n_shots, 6)
-        )
-        mean[f"fb_fre_{band_name}_frequency_range_hz"] = [
-            round(float(fmin), 4),
-            round(float(fmax), 4),
-        ]
+        fb_sums: Dict[str, Dict[str, float]] = {
+            band_name: {"ne": 0.0, "snr": 0.0, "energy_ratio": 0.0}
+            for band_name, _ in bands
+        }
+
+        for i in range(n_shots):
+            total_energy = float(np.sum(tgt[i] ** 2))
+            for band_name, (fmin, fmax) in bands:
+                ref_band = _bandpass_filter(
+                    tgt[i], dt, fmin, fmax, taper_width=fb_taper_width
+                )
+                pred_band = _bandpass_filter(
+                    pred[i], dt, fmin, fmax, taper_width=fb_taper_width
+                )
+                diff = pred_band - ref_band
+                ref_energy = float(np.sum(ref_band ** 2))
+                err_energy = float(np.sum(diff ** 2))
+                ne = float(np.sqrt(err_energy) / (np.sqrt(ref_energy) + eps))
+                if ref_energy > 0.0:
+                    snr = float(10.0 * np.log10(ref_energy / (err_energy + eps)))
+                else:
+                    snr = float("-inf")
+                energy_ratio = float(ref_energy / (total_energy + eps))
+                fb_sums[band_name]["ne"] += ne
+                fb_sums[band_name]["snr"] += snr
+                fb_sums[band_name]["energy_ratio"] += energy_ratio
+
+        for band_name, (fmin, fmax) in bands:
+            mean[f"fb_fre_{band_name}_ne"] = _sanitize_for_json(
+                round(fb_sums[band_name]["ne"] / n_shots, 6)
+            )
+            mean[f"fb_fre_{band_name}_snr"] = _sanitize_for_json(
+                round(fb_sums[band_name]["snr"] / n_shots, 6)
+            )
+            mean[f"fb_fre_{band_name}_energy_ratio"] = _sanitize_for_json(
+                round(fb_sums[band_name]["energy_ratio"] / n_shots, 6)
+            )
+            mean[f"fb_fre_{band_name}_frequency_range_hz"] = [
+                round(float(fmin), 4),
+                round(float(fmax), 4),
+            ]
 
     return mean
+
+
+def build_binned_metric_kwargs(infer_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Build keyword arguments for ``compute_binned_metrics`` from inference config.
+
+    The expected YAML shape is::
+
+        inference:
+          binned_metrics:
+            enabled: true
+            eb_wse:
+              enabled: true
+              bins: [[5, 20], [20, 40], [40, 70], [70, 100]]
+              smooth_sigma: 1.0
+            fb_fre:
+              enabled: true
+              rel_threshold: 0.001
+              band_ratios: [0.20, 0.30, 0.30, 0.20]
+              band_names: ["low", "mid", "high", "very_high"]
+              taper_width: 0.0
+
+    Missing fields use the same defaults as ``compute_binned_metrics``, so older
+    configs without ``binned_metrics`` continue to work.
+
+    Parameters
+    ----------
+    infer_cfg : the ``inference`` block from the loaded config.
+
+    Returns
+    -------
+    kwargs : keyword arguments ready to be unpacked into
+             ``compute_binned_metrics(..., **kwargs)``.
+    """
+    binned_cfg = infer_cfg.get("binned_metrics", {})
+    if not binned_cfg.get("enabled", True):
+        return {"eb_enabled": False, "fb_enabled": False}
+
+    eb_cfg = binned_cfg.get("eb_wse", {})
+    fb_cfg = binned_cfg.get("fb_fre", {})
+
+    kwargs: Dict[str, Any] = {
+        "eb_enabled": eb_cfg.get("enabled", True),
+        "fb_enabled": fb_cfg.get("enabled", True),
+    }
+
+    if kwargs["eb_enabled"]:
+        kwargs["eb_bins"] = tuple(
+            tuple(b) for b in eb_cfg.get("bins", ((5, 20), (20, 40), (40, 70), (70, 100)))
+        )
+        kwargs["eb_smooth_sigma"] = eb_cfg.get("smooth_sigma", 1.0)
+
+    if kwargs["fb_enabled"]:
+        kwargs["fb_rel_threshold"] = fb_cfg.get("rel_threshold", 0.001)
+        kwargs["fb_band_ratios"] = tuple(
+            fb_cfg.get("band_ratios", (0.20, 0.30, 0.30, 0.20))
+        )
+        kwargs["fb_band_names"] = tuple(
+            fb_cfg.get("band_names", ("low", "mid", "high", "very_high"))
+        )
+        kwargs["fb_taper_width"] = fb_cfg.get("taper_width", 0.0)
+
+    return kwargs
 
 
 def select_random_shots(

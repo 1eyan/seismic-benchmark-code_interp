@@ -45,6 +45,7 @@ from tools.preprocessing import (  # noqa: E402
 )
 from utils import count_parameters, load_checkpoint, load_config, set_seed  # noqa: E402
 from utils.inference_utils import (  # noqa: E402
+    build_binned_metric_kwargs,
     compute_binned_metrics,
     compute_shot_metrics,
     inference_on_shots,
@@ -337,8 +338,9 @@ def main() -> None:
         delta_mean[key] = round(float(np.nanmean(delta_arr)), 6)
 
     dt = float(prep.get("dt", 0.002))
-    noisy_binned_mean = compute_binned_metrics(noisy_norm, shots_norm, dt=dt)
-    denoised_binned_mean = compute_binned_metrics(pred_norm, shots_norm, dt=dt)
+    binned_kwargs = build_binned_metric_kwargs(infer_cfg)
+    noisy_binned_mean = compute_binned_metrics(noisy_norm, shots_norm, dt=dt, **binned_kwargs)
+    denoised_binned_mean = compute_binned_metrics(pred_norm, shots_norm, dt=dt, **binned_kwargs)
 
     delta_binned_mean: Dict[str, Optional[float]] = {}
     for key in noisy_binned_mean:
