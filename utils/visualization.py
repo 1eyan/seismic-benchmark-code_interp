@@ -61,7 +61,7 @@ def plot_sample(
     target: Optional[ArrayLike],
     save_path: Union[str, Path],
     title: Optional[str] = None,
-    cmap: str = "gray",
+    cmap: str = "seismic",
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     share_scale: bool = True,
@@ -76,7 +76,7 @@ def plot_sample(
                              is plotted (no residual).
     save_path              : output PNG path (parents auto-created).
     title                  : optional global figure title.
-    cmap                   : Matplotlib colormap name; default ``"gray"``.
+    cmap                   : Matplotlib colormap name; default ``"seismic"``.
 
     Display convention
     ------------------
@@ -148,7 +148,7 @@ def visualize_random_sample(
     device: Union[str, torch.device] = "cpu",
     title: Optional[str] = None,
     seed: Optional[int] = None,
-    cmap: str = "gray",
+    cmap: str = "seismic",
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     share_scale: bool = True,
@@ -397,9 +397,9 @@ def visualize_first_break_sample(
 
     fig, axes = plt.subplots(1, 4, figsize=(16, 4))
     panels = [
-        ("input", x2d, "gray", -v, v),
+        ("input", x2d, "seismic", -v, v),
         ("probability", p2d, "magma", 0.0, 1.0),
-        ("target", np.where(valid_pixels, y2d, np.nan), "gray", 0.0, 1.0),
+        ("target", np.where(valid_pixels, y2d, np.nan), "seismic", 0.0, 1.0),
     ]
     for ax, (name, arr, cmap, vmin, vmax) in zip(axes[:3], panels):
         im = ax.imshow(arr.T, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto")
@@ -408,7 +408,7 @@ def visualize_first_break_sample(
         ax.set_ylabel("time")
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-    axes[3].imshow(x2d.T, cmap="gray", vmin=-v, vmax=v, aspect="auto")
+    axes[3].imshow(x2d.T, cmap="seismic", vmin=-v, vmax=v, aspect="auto")
     axes[3].plot(traces[target_valid], target_pick_np[target_valid], color="lime", linewidth=1.0, label="target")
     axes[3].plot(traces[pred_valid], pred_pick[pred_valid], color="red", linewidth=1.0, label="pred")
     axes[3].set_title("overlay")

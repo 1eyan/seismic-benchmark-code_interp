@@ -1085,6 +1085,7 @@ class GatedSeismicInterpolationTransformerV9(nn.Module):
             (batch_size, seq_len, input_dim)
         """
         B, seq_len, _ = x.shape
+        input_x = x
         if coords is None:
             coords = torch.zeros(B, seq_len, 4, dtype=x.dtype, device=x.device)
         if time_bounds is None:
@@ -1109,6 +1110,9 @@ class GatedSeismicInterpolationTransformerV9(nn.Module):
 
         features, latent = self.encoder(x, skip_initial_proj=True, position_ids=position_ids)
         x = self.decoder(latent, features, position_ids=position_ids)
+        if mask is not None:
+            obs_3d = mask.float().unsqueeze(-1)
+            x = x * (1 - obs_3d) + input_x * obs_3d
         return x
 
 

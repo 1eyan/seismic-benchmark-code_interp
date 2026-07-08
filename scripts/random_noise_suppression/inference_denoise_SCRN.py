@@ -179,8 +179,22 @@ def main() -> None:
     seed = args.seed if args.seed is not None else infer_cfg.get("seed", cfg["experiment"]["seed"])
     set_seed(int(seed))
     device = torch.device(
-        args.device if args.device is not None else infer_cfg.get("device", cfg["experiment"].get("device", "cpu"))
+        args.device if args.device is not None
+        else infer_cfg.get("device", cfg["experiment"].get("device", "cpu"))
     )
+    if device.type == "cuda":
+        if not torch.cuda.is_available():
+            print("Warning: CUDA not available, falling back to CPU.")
+            device = torch.device("cpu")
+        elif device.index is None:
+            device = torch.device("cuda:0")
+        elif device.index >= torch.cuda.device_count():
+            print(
+                f"Warning: CUDA device {device} not available "
+                f"(found {torch.cuda.device_count()} GPU(s)), falling back to cuda:0."
+            )
+            device = torch.device("cuda:0")
+    print(f"Using device: {device}")
     batch_size = (
         args.batch_size
         if args.batch_size is not None

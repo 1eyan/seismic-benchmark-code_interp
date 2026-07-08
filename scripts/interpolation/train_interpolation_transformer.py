@@ -8,6 +8,7 @@ CUDA_VISIBLE_DEVICES=6,7 torchrun --nproc_per_node=2 \
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 
 _REPO_ROOT = next(
@@ -128,8 +130,8 @@ def _extract_coords(
 
 def _preprocess_shots(
     cfg: Dict[str, Any],
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
-    """Load volume, preprocess, and return ``(masked, target, per_shot_ffid, headers)``."""
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray], Dict[str, Any]]:
+    """Load volume, preprocess, and return ``(masked, target, per_shot_ffid, headers, norm_stats)``."""
     prep = cfg["preprocess"]
 
     data_cfg = None
@@ -155,12 +157,15 @@ def _preprocess_shots(
             t0=float(prep.get("t0", 0.0)),
         )
 
+    norm_stats: Dict[str, Any] = {}
     if "normalize" not in skip:
-        shots, _ = normalize(
+        shots, norm_stats = normalize(
             shots,
             mode=str(prep.get("normalize_mode", "max_abs")),
             per=str(prep.get("normalize_scope", "global")),
         )
+    norm_stats["mode"] = str(prep.get("normalize_mode", "max_abs"))
+    norm_stats["scope"] = str(prep.get("normalize_scope", "global"))
 
     mask_mode = str(prep.get("mask_mode", "uniform"))
     mask_ratio = float(prep.get("mask_ratio", 0.5))
@@ -185,7 +190,7 @@ def _preprocess_shots(
     else:
         per_shot_ffid = np.arange(shots.shape[0])
 
-    return masked, shots, per_shot_ffid, headers
+    return masked, shots, per_shot_ffid, headers, norm_stats
 
 
 def _build_transformer_tokens(
@@ -209,17 +214,12 @@ def _build_transformer_tokens(
     chunk_length = int(prep.get("chunk_length", 256))
     overlap_ratio = float(prep.get("overlap_ratio", 0.0))
 
-    # Chunk target to get chunk_info and time_bounds
-    _, coords_ref, time_bounds_raw, chunk_info = trace_time_chunk(
+    target_tokens, coords_ref, time_bounds_raw, chunk_info = trace_time_chunk(
         target_shots, coords, chunk_length, overlap_ratio,
     )
 
-    # Chunk masked and target
     masked_tokens, _, _, _ = trace_time_chunk(
         masked_shots, coords, chunk_length, overlap_ratio,
-    )
-    target_tokens, _, _, _ = trace_time_chunk(
-        target_shots, coords, chunk_length, overlap_ratio,
     )
 
     # Token-level mask: 1 if token has any non-zero sample
@@ -267,7 +267,9 @@ def train_one_epoch_transformer(
 
         optimizer.zero_grad(set_to_none=True)
         pred = model(input_tok, coords=coords, time_bounds=time_bounds, mask=mask)
-        loss = loss_fn(pred, target_tok)
+        missing_mask = (1.0 - mask)  # (B, L), missing=1, observed=0
+        n_missing = missing_mask.sum().clamp(min=1)
+        loss = (F.mse_loss(pred, target_tok, reduction="none") * missing_mask.unsqueeze(-1)).sum() / n_missing
         loss.backward()
         if grad_clip and grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
@@ -321,7 +323,9 @@ def evaluate_transformer(
         ]
 
         pred = model(input_tok, coords=coords, time_bounds=time_bounds, mask=mask)
-        loss = loss_fn(pred, target_tok)
+        missing_mask = (1.0 - mask)
+        n_missing = missing_mask.sum().clamp(min=1)
+        loss = (F.mse_loss(pred, target_tok, reduction="none") * missing_mask.unsqueeze(-1)).sum() / n_missing
         total_loss += float(loss.detach().item())
         n_batches += 1
 
@@ -377,7 +381,7 @@ def visualize_transformer_shot(
         single_masked = masked_shots[shot_idx: shot_idx + 1]
         single_coords = coords[shot_idx: shot_idx + 1]
 
-        input_tok, _, c_tok, tb, chunk_info_single = trace_time_chunk(
+        input_tok, c_tok, tb, chunk_info_single = trace_time_chunk(
             single_masked, single_coords, chunk_length, overlap_ratio,
         )
         T = target_shots.shape[2]
@@ -478,7 +482,15 @@ def main() -> None:
     device = training_device(cfg, distributed=distributed, local_rank=local_rank)
 
     # --- Data ---
-    masked_shots, target_shots, per_shot_ffid, headers = _preprocess_shots(cfg)
+    masked_shots, target_shots, per_shot_ffid, headers, norm_stats = _preprocess_shots(cfg)
+
+    # Save normalization stats to experiment directory for inference
+    if norm_stats and rank == 0:
+        stats_path = exp_dir / "normalization_stats.json"
+        with open(stats_path, "w", encoding="utf-8") as f:
+            json.dump({k: (v.tolist() if hasattr(v, "tolist") else float(v)
+                           if isinstance(v, (np.floating, np.integer)) else v)
+                       for k, v in norm_stats.items()}, f, indent=2)
 
     data_cfg = None
     for key in ("segy", "npy", "mat"):
@@ -543,7 +555,8 @@ def main() -> None:
 
     # --- Model ---
     model = build_model(cfg["model"]).to(device)
-    model = maybe_wrap_ddp(model, distributed=distributed, device=device, local_rank=local_rank)
+    model = maybe_wrap_ddp(model, distributed=distributed, device=device, local_rank=local_rank,
+                          find_unused_parameters=True)
     model_type = str(cfg["model"]["type"])
 
     if rank == 0:
@@ -599,29 +612,23 @@ def main() -> None:
 
         val_losses: Dict[str, float] = {"val": float("nan")}
         val_metrics: Dict[str, float] = {}
-        train_metrics: Dict[str, float] = {n: float("nan") for n in metric_names}
 
         if rank == 0:
-            _, train_metrics = evaluate_transformer(
+            val_losses, val_metrics = evaluate_transformer(
                 model=model, loader=val_loader,
                 loss_fn=loss_fn, metrics=metrics, device=device,
             )
-            if (epoch + 1) % eval_interval == 0:
-                val_losses, val_metrics = evaluate_transformer(
-                    model=model, loader=val_loader,
-                    loss_fn=loss_fn, metrics=metrics, device=device,
-                )
-                best_val_loss = maybe_save_best_checkpoint(
-                    exp_dir / "checkpoints" / "best.pt",
-                    model=model, optimizer=optimizer, scheduler=scheduler,
-                    epoch=epoch, val_loss=val_losses["val"],
-                    best_val_loss=best_val_loss,
-                    extras={"config": cfg}, logger=logger,
-                )
+            best_val_loss = maybe_save_best_checkpoint(
+                exp_dir / "checkpoints" / "best.pt",
+                model=model, optimizer=optimizer, scheduler=scheduler,
+                epoch=epoch, val_loss=val_losses["val"],
+                best_val_loss=best_val_loss,
+                extras={"config": cfg}, logger=logger,
+            )
 
         metric_row: Dict[str, float] = {}
         for name in metric_names:
-            metric_row[f"train_{name}"] = train_metrics.get(name, float("nan"))
+            metric_row[f"train_{name}"] = val_metrics.get(name, float("nan"))
             metric_row[f"val_{name}"] = val_metrics.get(name, float("nan"))
 
         if logger is not None:

@@ -119,7 +119,7 @@ def inference_on_shots_transformer(
                 batch_masked = masked_shots[i: i + batch_size]
                 batch_coords = coords[i: i + batch_size]
 
-                input_tok, _, c_tok, tb, chunk_info = trace_time_chunk(
+                input_tok, c_tok, tb, chunk_info = trace_time_chunk(
                     batch_masked, batch_coords, chunk_length, overlap_ratio,
                 )
                 tb_norm = tb.astype(np.float32) / T_norm
@@ -159,6 +159,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--save-npy", action="store_true", default=None)
+    parser.add_argument("--replace-observed", action="store_true", default=None,
+                        help="Replace all traces (including observed) with model predictions.")
     parser.add_argument("--mask-mode", type=str, default=None, choices=["uniform", "random", "continuous"])
     parser.add_argument("--mask-ratio", type=float, default=None)
     parser.add_argument(
@@ -199,6 +201,19 @@ def main() -> None:
         args.device if args.device is not None
         else infer_cfg.get("device", cfg["experiment"].get("device", "cpu"))
     )
+    if device.type == "cuda":
+        if not torch.cuda.is_available():
+            print("Warning: CUDA not available, falling back to CPU.")
+            device = torch.device("cpu")
+        elif device.index is None:
+            device = torch.device("cuda:0")
+        elif device.index >= torch.cuda.device_count():
+            print(
+                f"Warning: CUDA device {device} not available "
+                f"(found {torch.cuda.device_count()} GPU(s)), falling back to cuda:0."
+            )
+            device = torch.device("cuda:0")
+    print(f"Using device: {device}")
     batch_size = (
         args.batch_size if args.batch_size is not None
         else infer_cfg.get("batch_size", 1)
@@ -206,6 +221,10 @@ def main() -> None:
     save_npy = (
         args.save_npy if args.save_npy is not None
         else infer_cfg.get("save_npy", False)
+    )
+    replace_observed = (
+        args.replace_observed if args.replace_observed is not None
+        else infer_cfg.get("replace_observed", False)
     )
 
     prep = cfg.get("preprocess", {})
@@ -301,7 +320,10 @@ def main() -> None:
         batch_size=batch_size,
     )
     mask_3d = trace_mask[..., None]
-    recon_norm = np.where(mask_3d, pred_norm, shots_norm)
+    if replace_observed:
+        recon_norm = pred_norm
+    else:
+        recon_norm = np.where(mask_3d, pred_norm, shots_norm)
     infer_elapsed = time.time() - infer_start
     print(f"Inference time: {infer_elapsed:.2f}s")
 

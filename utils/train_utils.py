@@ -263,14 +263,18 @@ def maybe_wrap_ddp(
     distributed: bool,
     device: torch.device,
     local_rank: int,
+    find_unused_parameters: bool = False,
 ) -> nn.Module:
     """Wrap ``module`` with ``DistributedDataParallel`` when ``distributed``."""
     if not distributed:
         return module
     if device.type != "cuda":
-        return nn.parallel.DistributedDataParallel(module)
+        return nn.parallel.DistributedDataParallel(
+            module, find_unused_parameters=find_unused_parameters,
+        )
     return nn.parallel.DistributedDataParallel(
-        module, device_ids=[local_rank], output_device=local_rank
+        module, device_ids=[local_rank], output_device=local_rank,
+        find_unused_parameters=find_unused_parameters,
     )
 
 

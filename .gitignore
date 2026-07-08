@@ -1,1 +1,60 @@
+# Byte-compiled / optimized / cache
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Python packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Experiment outputs (checkpoints, logs, CSVs, PNGs)
+results/
+!results/README.md
+
+# Model checkpoints / weights
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+
+# Data files
+*.sgy
+*.segy
+*.npy
+*.npz
+*.h5
+*.hdf5
+
+# Logs and generated CSV/plots
+*.log
+*.csv
+loss_curve.png
+metrics_curve.png
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

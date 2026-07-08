@@ -53,8 +53,8 @@ set -euo pipefail
 # User configuration
 # ==============================================================================
 
-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
-NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2,3}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-2}"
 MASTER_PORT="${MASTER_PORT:-auto}"
 TORCHRUN_EXTRA="${TORCHRUN_EXTRA:-}"
 
@@ -79,8 +79,10 @@ INFER_PY=""
 # Fixed trace count is only meaningful for continuous missing traces.
 EXPERIMENTS=(
   "random:0.3"
+  "random:0.5"
+  "random:0.7"
+  "uniform:0.3"
   "uniform:0.5"
-  "continuous:0.3"
   "continuous:20tr"
   "continuous:30tr"
   "continuous:40tr"
@@ -89,7 +91,7 @@ EXPERIMENTS=(
 N_SEEDS=3
 START_SEED=42
 
-INFER_DEVICE="${INFER_DEVICE:-cuda:0}"
+INFER_DEVICE="${INFER_DEVICE:-cuda:2}"
 RUN_INFERENCE=true
 RUN_EXTRA_INFERENCE=true
 

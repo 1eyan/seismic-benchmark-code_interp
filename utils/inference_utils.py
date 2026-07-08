@@ -264,7 +264,7 @@ def save_shot_visualizations(
     indices: np.ndarray,
     save_dir: Path,
     title_prefix: str = "shot",
-    cmap: str = "gray",
+    cmap: str = "seismic",
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     share_scale: bool = True,

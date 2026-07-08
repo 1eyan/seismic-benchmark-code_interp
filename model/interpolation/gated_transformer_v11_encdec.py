@@ -408,8 +408,11 @@ class GatedSeismicInterpolationTransformerV11EncDec(nn.Module):
             memory_position_ids=memory_pos,
         )
 
-        # Step 5: Output projection
+        # Step 5: Output projection + replace observed tokens with input
         output = self.output_proj(decoded)
+        if mask is not None:
+            obs_3d = mask.float().unsqueeze(-1)
+            output = output * (1 - obs_3d) + input_x * obs_3d
         return output
 
 
