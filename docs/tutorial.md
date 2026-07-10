@@ -8,6 +8,9 @@ A hands-on guide to the `seismic-benchmark-code` repository.
 - [Chapter 2: Project Structure and Core Concepts](#chapter-2-project-structure-and-core-concepts)
 - [Chapter 3: Quick Start](#chapter-3-quick-start)
 - [Chapter 4: Complete End-to-End Example — Data and Preprocessing](#chapter-4-complete-end-to-end-example--data-and-preprocessing)
+- [Chapter 5: Extending to Other Tasks](#chapter-5-extending-to-other-tasks)
+- [Chapter 6: Customizing and Extending the Library](#chapter-6-customizing-and-extending-the-library)
+- [Chapter 7: Troubleshooting and Quick Reference](#chapter-7-troubleshooting-and-quick-reference)
 
 ---
 
@@ -856,4 +859,420 @@ done
 ```
 
 This writes each SNR level to its own output directory and is useful for quick comparisons without editing the shell sweep.
+
+
+## Chapter 5: Extending to Other Tasks
+
+The repository ships with four task families. They all use the same registry + factory backbone, but the way training pairs are generated differs.
+
+### 5.1 Task comparison
+
+| Task | Input Data | Entry Scripts | Config Directory | Key Differences |
+|------|------------|---------------|------------------|-----------------|
+| `random_noise_suppression` | Clean volume + synthetic noise | `scripts/random_noise_suppression/train_denoise_*.py`, `inference_denoise_*.py` | `configs/random_noise_suppression/` | Noise is injected with `add_noise`; metrics compare the denoised output to the clean target. |
+| `ground_roll_attenuation` | Paired noisy / noise-label volumes | `scripts/ground_roll_attenuation/train_denoise_*.py`, `batch_evaluate.py` | `configs/ground_roll_attenuation/` | No synthetic noise injection; the model predicts the additive noise label; the `data` block uses `segy_pair` (or `npy_pair` / `mat_pair`). |
+| `multiples_attenuation` | Paired noisy / noise-label volumes | `scripts/multiples_attenuation/train_denoise_*.py`, `batch_evaluate.py` | `configs/multiples_attenuation/` | Same shape as ground-roll attenuation; task-specific data and semantics. |
+| `interpolation` | Single volume + trace masking | `scripts/interpolation/train_interpolation_unet.py`, `inference_interpolation.py` | `configs/interpolation/` | `mask_traces` simulates missing traces; the model reconstructs the full shot gather. |
+
+### 5.2 random_noise_suppression
+
+This is the task covered in Chapter 4.
+
+### 5.3 ground_roll_attenuation
+
+Ground-roll attenuation is trained on **paired volumes**: a noisy input volume and a corresponding noise-label volume (the additive noise component). The model learns to predict the noise map; the denoised estimate is `noisy_input - predicted_noise`.
+
+Train a U-Net baseline:
+
+```bash
+python scripts/ground_roll_attenuation/train_denoise_unet.py \
+  --config configs/ground_roll_attenuation/denoise_unet.yaml
+```
+
+After training, run the batch evaluator on the experiment directory tree:
+
+```bash
+python scripts/ground_roll_attenuation/batch_evaluate.py \
+  --root_dir results/ground_roll_attenuation \
+  --output results/ground_roll_attenuation/batch_evaluation.xlsx \
+  --device cuda:0 \
+  --batch_size 8
+```
+
+`batch_evaluate.py` scans each experiment directory, loads `checkpoints/best.pt`, runs inference on the held-out `test_set/`, and writes an Excel workbook with one sheet per noise level. The workbook compares raw-input metrics (noisy vs reference) and denoised metrics (model output vs reference).
+
+> **Note:** `batch_evaluate.py` requires `openpyxl`: `pip install openpyxl`.
+
+The ground-roll config uses a `data.segy_pair` block (NPY/MAT variants are `npy_pair` / `mat_pair`):
+
+```yaml
+data:
+  segy_pair:
+    input_path: /path/to/noisy.sgy
+    target_path: /path/to/noise_label.sgy
+    traces_per_shot: 201
+    time_downsample: 1
+```
+
+The two volumes must have the same shape after loading.
+
+### 5.4 multiples_attenuation
+
+Multiples attenuation follows the same paired-volume setup as ground-roll attenuation; only the data and the physical meaning of the noise label differ.
+
+Train a U-Net baseline:
+
+```bash
+python scripts/multiples_attenuation/train_denoise_unet.py \
+  --config configs/multiples_attenuation/denoise_unet.yaml
+```
+
+Run the batch evaluator:
+
+```bash
+python scripts/multiples_attenuation/batch_evaluate.py \
+  --root_dir results/multiples_attenuation \
+  --output results/multiples_attenuation/batch_evaluation.xlsx \
+  --device cuda:0 \
+  --batch_size 8
+```
+
+### 5.5 interpolation
+
+Interpolation trains a model to reconstruct missing traces. A single volume is loaded, masked along the trace axis, and the model learns to recover the original traces.
+
+Train a U-Net baseline with uniform 50% missing traces:
+
+```bash
+python scripts/interpolation/train_interpolation_unet.py \
+  --config configs/interpolation/interpolation_unet.yaml \
+  --mask-mode uniform \
+  --mask-ratio 0.5
+```
+
+The training script appends the masking parameters to the experiment name, so the output directory for the run above becomes `results/interp_unet_base_uniform_miss50/`.
+
+Run inference with the masked checkpoint:
+
+```bash
+python scripts/interpolation/inference_interpolation.py \
+  --config configs/interpolation/interpolation_unet.yaml \
+  --checkpoint results/interp_unet_base_uniform_miss50/checkpoints/epoch_0049.pt \
+  --output-dir results/interp_unet_base_uniform_miss50/inference \
+  --n-viz-shots 5 \
+  --device cuda:0
+```
+
+Interpolation-specific YAML fields:
+
+- `preprocess.mask_mode` (or CLI `--mask-mode`): `uniform`, `random`, or `continuous`.
+- `preprocess.mask_ratio` (or CLI `--mask-ratio`): fraction of traces to mask in `(0, 1)`.
+- `preprocess.uniform_stride`: only used when `mask_mode` is `uniform`; keeps every `uniform_stride`-th trace. For example, `uniform_stride: 2` removes every other trace.
+- `preprocess.spherical_power`: often enabled for interpolation (e.g., `1.2`) to compensate for spherical divergence before masking and normalization.
+
+The interpolation task is the only one of the four that uses `mask_traces` instead of `add_noise` or paired noise labels. The other YAML blocks (`model`, `loss`, `metrics`, `optim`, `scheduler`, `train`, `log`) follow the same registry pattern as Chapter 4.
+
+---
+
+## Chapter 6: Customizing and Extending the Library
+
+All pluggable components are added through the registry + factory pattern described in Chapter 2. This chapter shows the concrete steps for each component type.
+
+### 6.1 Adding a New Model
+
+Models live in `model/<task>/` and are registered with the `MODEL_REGISTRY`.
+
+Steps:
+
+1. Create `model/<task>/my_model.py`.
+2. Inherit from `nn.Module`.
+3. Decorate the class with `@register_model("my_model")`.
+4. Add `from . import my_model  # noqa: F401` to `model/<task>/__init__.py` so the decorator runs at import time.
+5. Reference the new model in the YAML config.
+
+Minimal example:
+
+```python
+# model/random_noise_suppression/my_model.py
+import torch.nn as nn
+from ..registry import register_model
+
+
+@register_model("my_model")
+class MyModel(nn.Module):
+    def __init__(self, in_channels=1, out_channels=1, base_channels=32):
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, 3, padding=1)
+
+    def forward(self, x):
+        return self.conv(x)
+```
+
+```python
+# model/random_noise_suppression/__init__.py
+from . import unet       # noqa: F401
+from . import my_model     # noqa: F401
+```
+
+```yaml
+# config snippet
+model:
+  type: my_model
+  params:
+    in_channels: 1
+    out_channels: 1
+    base_channels: 32
+```
+
+The same pattern applies to `model/ground_roll_attenuation/`, `model/multiples_attenuation/`, and `model/interpolation/`. Note that the top-level `model/__init__.py` does **not** import every task; each task subpackage has its own registry view, so scripts import `build_model` from the appropriate task (e.g., `from model.ground_roll_attenuation import build_model`).
+
+### 6.2 Adding a New Loss
+
+Losses are registered in `utils/losses.py`.
+
+Steps:
+
+1. Inherit from `BaseLoss`.
+2. Implement `forward(self, pred, target=None, **extras)`.
+3. Decorate with `@register_loss("my_loss")`.
+
+The `extras` dict is passed by the training loop and can carry optional masks or weights.
+
+Example:
+
+```python
+# utils/losses.py
+@register_loss("my_loss")
+class MyLoss(BaseLoss):
+    def __init__(self, weight: float = 1.0):
+        super().__init__()
+        self.weight = weight
+
+    def forward(self, pred, target=None, **extras):
+        if target is None:
+            raise ValueError("MyLoss requires target.")
+        return self.weight * (pred - target).abs().mean()
+```
+
+YAML:
+
+```yaml
+loss:
+  type: my_loss
+  params:
+    weight: 1.0
+```
+
+### 6.3 Adding a New Metric
+
+Metrics are registered in `utils/metrics.py`.
+
+Steps:
+
+1. Inherit from `BaseMetric`.
+2. Implement `__call__(self, pred, target)` returning a Python `float`.
+3. Set `higher_is_better` appropriately.
+4. Decorate with `@register_metric("my_metric")`.
+
+Reduction modes:
+
+- `reduction="per_sample"` (default): compute the metric independently for each sample in the leading batch dimension, then average across the batch. This matches the common seismic convention of reporting a mean per-shot SNR or PSNR.
+- `reduction="global"`: pool all elements first, then apply any non-linear operation (e.g., `sqrt` or `log10`). This preserves textbook identities such as `RMSE == sqrt(MSE)` and `PSNR == 10*log10(peak^2 / MSE)`.
+
+Example:
+
+```python
+# utils/metrics.py
+@register_metric("my_metric")
+class MyMetric(BaseMetric):
+    """Mean absolute error (example custom metric)."""
+
+    higher_is_better = False
+
+    def __call__(self, pred, target):
+        pred, target = _prepare(pred, target, "MyMetric")
+        return float((pred - target).abs().mean())
+```
+
+YAML:
+
+```yaml
+metrics:
+  - name: my_metric
+    params: {}
+```
+
+### 6.4 Adding a New Dataset
+
+Dataset classes live in `utils/datasets.py` and inherit from `BaseArrayDataset`.
+
+Required overrides:
+
+- `_build_index()`: scan `self.root` and populate `self._index` with `Path` objects.
+- `_load_sample(path)`: return `(input_tensor, target_tensor_or_none)`. Both should be CPU tensors.
+
+The dataset expects seismic volumes with the standard shape `(n_shots, n_traces, n_time)`.
+
+Example:
+
+```python
+# utils/datasets.py
+@register_dataset("my_dataset")
+class MyDataset(BaseArrayDataset):
+    """Dataset backed by custom NumPy files."""
+
+    def _build_index(self):
+        if not self.root.exists():
+            raise FileNotFoundError(f"Dataset root not found: {self.root}")
+        self._index = sorted(self.root.rglob("*.npy"))
+        if not self._index:
+            raise FileNotFoundError(f"No .npy files found under {self.root}")
+
+    def _load_sample(self, path):
+        arr = np.load(path)
+        x = torch.from_numpy(np.asarray(arr)).float()
+        return x, None
+```
+
+YAML:
+
+```yaml
+data:
+  type: my_dataset
+  params:
+    root: /path/to/data
+  loader:
+    batch_size: 8
+    num_workers: 4
+    pin_memory: true
+```
+
+### 6.5 Adding a New Preprocessing Step
+
+New preprocessing functions should be added to `tools/preprocessing.py` as pure NumPy operations on `(n_shots, n_traces, n_time)` or `(n_traces, n_time)`.
+
+Steps:
+
+1. Implement the function and, if the step is optional, add it to the `skip` mechanism in the task-specific training script.
+2. Add the configuration field to the YAML `preprocess` block.
+3. Call the function from the task-specific script's preprocessing function (e.g., `_preprocess_shots` in `scripts/interpolation/train_interpolation_unet.py`).
+
+Example:
+
+```python
+# tools/preprocessing.py
+def scale_amplitude(shots, scale=1.0):
+    """Scale amplitudes by a constant factor."""
+    return shots * scale, {"scale": scale}
+```
+
+Then in the relevant training script:
+
+```python
+if "scale_amplitude" not in skip:
+    shots, _ = scale_amplitude(shots, scale=float(prep.get("amplitude_scale", 1.0)))
+```
+
+YAML:
+
+```yaml
+preprocess:
+  amplitude_scale: 1.0
+  skip: []
+```
+
+When adding a step that changes the amplitude scale, remember to update `normalize_mode` and metric `data_range` values consistently.
+
+---
+
+## Chapter 7: Troubleshooting and Quick Reference
+
+### 7.1 Troubleshooting and FAQ
+
+**Checkpoint not found / path issues**
+
+- Verify that the checkpoint file exists. For the random-noise example the default is `results/random_noise/<experiment.name>/checkpoints/best.pt`.
+- For `ground_roll_attenuation` and `multiples_attenuation`, `batch_evaluate.py` requires both `checkpoints/best.pt` and a `test_set/` directory in every experiment directory it scans.
+- If you train interpolation with `--mask-mode` / `--mask-ratio`, the experiment name is auto-suffixed (e.g., `interp_unet_base_uniform_miss50`), so the checkpoint path changes accordingly.
+
+**`segyio` not installed or SEG-Y path wrong**
+
+- Install the dependency: `pip install segyio`.
+- Confirm the file exists: `ls /path/to/volume.sgy`.
+- Check that `traces_per_shot` and `time_downsample` in the config match the actual file geometry.
+- For paired tasks, the noisy input and the noise label must have the same trace count, sample count, and FFID ordering.
+
+**Out-of-memory**
+
+- Reduce `data.loader.batch_size` or `inference.batch_size`.
+- Reduce `preprocess.patch_trace` or `preprocess.patch_time`.
+- Reduce `inference.n_viz_shots` if visualization is slow.
+- Use a smaller model (`base_channels`, `depth`) for memory-constrained GPUs.
+
+**SSIM / PSNR `data_range` mismatch with `normalize_mode`**
+
+- `max_abs` normalizes to `[-1, 1]`: SSIM needs `data_range: 2.0`, PSNR needs `data_range: 1.0`.
+- `minmax` normalizes to `[0, 1]`: both SSIM and PSNR use `data_range: 1.0`.
+- `mean_std` is unbounded; set the ranges from the actual target volume or keep them in the metric params.
+
+**`shot_split` inconsistency between training and inference**
+
+- The `inference.shot_split` block must match `data.shot_split` from training so the same test shot is selected.
+- If training used a patch-level split (`test_ratio` instead of `shot_split`), do not add `inference.shot_split` at inference time.
+- The split is based on sequential FFIDs, not arbitrary shot indices.
+
+**Model not registered: missing import or decorator typo**
+
+- Check the registry contents: `from model.<task> import MODEL_REGISTRY; print(sorted(MODEL_REGISTRY))`.
+- Verify that `model/<task>/__init__.py` contains `from . import my_model  # noqa: F401`.
+- Verify the decorator name exactly matches `model.type` in the YAML config (case-sensitive).
+- Verify the script imports `build_model` from the correct task subpackage (e.g., `from model.ground_roll_attenuation import build_model`).
+
+### 7.2 Quick Reference Cards
+
+#### CLI command cheat sheet
+
+| Task | Train | Inference |
+|------|-------|-----------|
+| `random_noise_suppression` | `python scripts/random_noise_suppression/train_denoise_unet.py --config configs/random_noise_suppression/denoise_unet.yaml` | `python scripts/random_noise_suppression/inference_denoise_unet.py --config configs/random_noise_suppression/denoise_unet.yaml --checkpoint results/random_noise/<exp>/checkpoints/best.pt` |
+| `ground_roll_attenuation` | `python scripts/ground_roll_attenuation/train_denoise_unet.py --config configs/ground_roll_attenuation/denoise_unet.yaml` | `python scripts/ground_roll_attenuation/batch_evaluate.py --root_dir results/ground_roll_attenuation --output results/ground_roll_attenuation/batch_evaluation.xlsx` |
+| `multiples_attenuation` | `python scripts/multiples_attenuation/train_denoise_unet.py --config configs/multiples_attenuation/denoise_unet.yaml` | `python scripts/multiples_attenuation/batch_evaluate.py --root_dir results/multiples_attenuation --output results/multiples_attenuation/batch_evaluation.xlsx` |
+| `interpolation` | `python scripts/interpolation/train_interpolation_unet.py --config configs/interpolation/interpolation_unet.yaml --mask-mode uniform --mask-ratio 0.5` | `python scripts/interpolation/inference_interpolation.py --config configs/interpolation/interpolation_unet.yaml --checkpoint results/interp_unet_base_uniform_miss50/checkpoints/epoch_0049.pt` |
+
+#### YAML top-level keys and common fields
+
+| Key | Common fields |
+|-----|---------------|
+| `experiment` | `name`, `output_dir`, `seed`, `device` |
+| `data` | Source (`segy`, `npy`, `mat`, `segy_pair`, `npy_pair`, `mat_pair`), `shot_split`, `loader` (`batch_size`, `num_workers`, `pin_memory`) |
+| `preprocess` | `dt`, `t0`, `spherical_power`, `normalize_mode`, `normalize_scope`, `clip_percentile`, `patch_time`, `patch_trace`, `patch_overlap`, `max_shots`, `skip`, `noise_kind`, `snr_db`, `mask_mode`, `mask_ratio`, `uniform_stride` |
+| `model` | `type`, `params` |
+| `loss` | `type`, `params` |
+| `metrics` | List of `{name, params}` |
+| `optim` | `type`, `params` |
+| `scheduler` | `type`, `params` |
+| `train` | `epochs`, `grad_clip`, `log_step`, `log_interval`, `eval_interval`, `ckpt_interval`, `vis_interval`, `resume` |
+| `log` | `log_dir`, `plot_interval` |
+| `inference` | `data`, `shot_split`, `checkpoint`, `output_dir`, `n_viz_shots`, `device`, `batch_size`, `save_npy`, `binned_metrics` |
+
+#### Registry decorator / factory / base class cheat sheet
+
+| Kind | Decorator | Base class | Factory | Registry |
+|------|-----------|------------|---------|----------|
+| Model | `@register_model("name")` | `nn.Module` | `build_model(cfg)` | `MODEL_REGISTRY` |
+| Loss | `@register_loss("name")` | `BaseLoss` | `build_loss(cfg)` | `LOSS_REGISTRY` |
+| Metric | `@register_metric("name")` | `BaseMetric` | `build_metrics(cfg_list)` | `METRIC_REGISTRY` |
+| Dataset | `@register_dataset("name")` | `BaseArrayDataset` | `build_dataset(cfg)` / `build_dataloader(cfg)` | `DATASET_REGISTRY` |
+
+#### Metric arguments cheat sheet
+
+| Metric | Arguments | Notes |
+|--------|-----------|-------|
+| `mse` | — | Global mean over all elements. |
+| `mae` | — | Global mean over all elements. |
+| `rmse` | `reduction: per_sample \| global` | `global` preserves `RMSE == sqrt(MSE)`. |
+| `snr` | `reduction`, `eps`, `min_signal_energy` | Signal-to-noise ratio in dB. |
+| `psnr` | `data_range`, `reduction`, `eps` | Peak amplitude of the reference signal. |
+| `ssim` | `data_range`, `window_size`, `sigma`, `k1`, `k2` | Peak-to-peak range of the reference signal. |
+
 
