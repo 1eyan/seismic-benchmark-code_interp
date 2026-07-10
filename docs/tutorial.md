@@ -280,7 +280,7 @@ data:
   #   key: shots
 ```
 
-All three loaders return a volume of shape `(n_shots, n_traces, n_time)` as `float32`. MAT files are loaded with `scipy.io.loadmat`; if the file contains more than one variable and no `key` is provided, the loader raises an error asking you to specify the variable name.
+All three loaders return a volume of shape `(n_shots, n_traces, n_time)` as `float32`. MAT files are loaded with `scipy.io.loadmat`; if the configured `key` is not present in the file, the loader raises a `KeyError` listing the available variable names.
 
 #### Shape convention
 
