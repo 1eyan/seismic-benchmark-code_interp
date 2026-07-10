@@ -620,3 +620,14 @@
   - Added detailed comments for the `inference.binned_metrics` block: master switch, EB-WSE bins/smooth_sigma, and FB-FRE `rel_threshold`, `band_ratios`, `band_names`, `taper_width`.
 - Impact: Users can now understand and tune the configs without reading the source code.
 - Follow-up: Keep comments updated when defaults or config schema change.
+
+## 2026-07-10 - Extend tutorial with YAML walkthrough, training, inference, and batch sweeps
+- Context: The tutorial ended at Chapter 4.2 and did not document the full random-noise suppression YAML, training/inference CLI details, or batch sweep scripts.
+- Change:
+  - Appended sections 4.3 (YAML config walkthrough), 4.4 (training in detail), 4.5 (inference and evaluation), and 4.6 (batch sweeps) to `docs/tutorial.md`.
+  - Covered all config blocks (`experiment`, `data`, `preprocess`, `model`, `loss`, `metrics`, `optim`, `scheduler`, `train`, `log`, `inference`), including the EB-WSE/FB-FRE `binned_metrics` block.
+  - Documented the single-GPU and multi-GPU `torchrun` commands, output directory structure, log files, and the current state of resume support.
+  - Documented inference CLI overrides, the step-by-step inference flow, metric groups (`noisy`, `denoised`, `delta`), and the binned-metric JSON output.
+  - Documented `train_denoise_unet.sh`, `inference_denoise_unet.sh`, and `run_all_random_noise_models.sh`, including the default sweep grid (`gaussian`/`poisson`, SNRs `-5`/`0`/`5` dB, seeds `42`/`43`/`44`).
+- Impact: Users can now follow the tutorial end-to-end without reading every source file or shell script.
+- Follow-up: Add a `--resume` flag to `train_denoise_unet.py` if automatic checkpoint resumption becomes a requirement.
