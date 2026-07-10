@@ -484,7 +484,7 @@ model:
 
 `type` must be a name registered in `MODEL_REGISTRY`. The file `model/random_noise_suppression/__init__.py` imports the task models so the decorators run. `params` is passed straight to the model constructor.
 
-For the random-noise suppression task, the registered models include `unet`, `dncnn`, `res_unet`, `atten_unet`, and `SCRN`. You can switch models by changing only `type` and, if necessary, the model-specific `params`.
+For the random-noise suppression task, the registered models include `unet`, `dncnn`, `res_unet`, `atten_unet`, and `SCRN`. You can switch models by changing only `type` and, if necessary, the model-specific `params`. Note that `SCRN` is also available as a registered model, but it is not included in the default `run_all_random_noise_models.sh` sweep; use its individual `train_denoise_SCRN.sh` and `inference_denoise_SCRN.sh` scripts to run it.
 
 #### Loss, optimizer, and scheduler blocks
 
@@ -580,7 +580,7 @@ inference:
     train: 7
     val: 1
     test: 1
-  checkpoint: /data/liuqi/code/Seismic-bench/seismic-benchmark-code-main/result/checkpoint/best.pt
+  checkpoint: results/random_noise/random_noise_unet_base/checkpoints/best.pt
   output_dir: results/random_noise/random_noise_unet_base/inference
   n_viz_shots: 5
   device: cuda:1
@@ -607,6 +607,9 @@ inference:
 - `device` — inference device, e.g. `cuda:0` or `cpu`.
 - `batch_size` — inference batch size, independent of `data.loader.batch_size`.
 - `binned_metrics` — EB-WSE and FB-FRE diagnostics. The `enabled` flag turns the whole subsystem on or off. Individual `eb_wse.enabled` and `fb_fre.enabled` switches control the two metrics.
+  - `eb_wse.smooth_sigma` — Gaussian smoothing sigma applied to the energy map before binning.
+  - `fb_fre.rel_threshold` — relative power threshold for keeping a frequency in the effective band.
+  - `fb_fre.taper_width` — cosine taper width in Hz at band edges.
 
 ### 4.4 Training in Detail
 
