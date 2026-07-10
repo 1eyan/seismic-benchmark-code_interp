@@ -39,7 +39,7 @@ Before you begin, you should be comfortable with:
 
 Optional but helpful:
 
-- Some exposure to pre-stack seismic shot gathers (SEG-Y, FFID, trace headers).
+- Some exposure to pre-stack seismic shot gathers (SEG-Y, FFID, trace headers). **FFID** (Field Record ID) is a SEG-Y header value that identifies one shot gather.
 - A CUDA-capable GPU for training (CPU training is possible but slow).
 
 ### 1.4 Dependencies
@@ -70,7 +70,7 @@ The repository is organized into self-contained directories. Each directory has 
 | Directory | Purpose |
 |-----------|---------|
 | `tools/` | Data utilities: I/O (`array_io.py`, `segy_read.py`), preprocessing (`preprocessing.py`), and patching (`patching.py`). |
-| `model/` | Neural network definitions and the `MODEL_REGISTRY`. Task-specific subpackages register their own models. |
+| `model/` | Neural network definitions and the `MODEL_REGISTRY`. Task-specific subpackages register their own models. Shared registration primitives live in `model/registry.py`; task-specific model files live in `model/<task>/`. |
 | `utils/` | Training infrastructure: datasets, losses, metrics, visualization, logging, optimizer/scheduler builders, training/evaluation loops, and checkpoint I/O. |
 | `configs/` | One YAML file per experiment. Hyper-parameters are never hard-coded in source. |
 | `scripts/` | CLI entry points for training (`train_*.py`) and inference (`inference_*.py`), plus bash launchers (`*.sh`). |
@@ -144,7 +144,7 @@ model:
     base_channels: 32
 ```
 
-Note: model registration requires adding `from . import <file>  # noqa: F401` to `model/<task>/__init__.py` so the decorator runs at import time. The top-level `model/__init__.py` only exposes registry primitives (`MODEL_REGISTRY`, `register_model`, `build_model`) and a placeholder model; it does **not** import every concrete model file. Task-specific models are registered only when their task subpackage (`model/<task>/`) is imported.
+Note: model registration requires adding `from . import <file>  # noqa: F401` to `model/<task>/__init__.py` so the decorator runs at import time. The top-level `model/__init__.py` only exposes registry primitives (`MODEL_REGISTRY`, `register_model`, `build_model`) and a placeholder model; it does **not** import every concrete model file. Task-specific models are registered only when their task subpackage (`model/<task>/`) is imported, for example `from model.random_noise_suppression import build_model`.
 
 ### 2.3 Component-agnostic training scripts
 
@@ -166,7 +166,7 @@ The default config points to:
 data/SEG_45Shot_shots1-9.sgy
 ```
 
-relative to the repository root. The config file also accepts NPY or MAT files by swapping the `data` block in `configs/random_noise_suppression/denoise_unet.yaml`.
+relative to the repository root. This tutorial assumes the SEG-Y file is located at `data/SEG_45Shot_shots1-9.sgy` relative to the repo root. If your file is elsewhere, update the `data.segy.path` value in `configs/random_noise_suppression/denoise_unet.yaml` (or any other config) before training.
 
 ### 3.2 Train a model in one command
 
@@ -193,6 +193,10 @@ python scripts/random_noise_suppression/inference_denoise_unet.py \
 
 You can override noise kind, SNR, batch size, device, and other inference settings from the command line without editing the YAML file.
 
+> **Warning:** The `inference.checkpoint` value in the default config may point to a stale or user-specific path. Always pass `--checkpoint` explicitly, or edit the config so that `inference.checkpoint` points to your actual `results/<exp>/checkpoints/best.pt`. A checkpoint path that is missing or points to another directory will either raise a `FileNotFoundError` or silently load the wrong weights.
+
+> **Note:** The inference command above only shows the most common flags. `--device` and `--batch-size` can also be overridden; the full list of flags is in Chapter 4.5.
+
 ### 3.4 Expected output tree
 
 After training, the experiment directory contains:
@@ -203,6 +207,7 @@ results/random_noise/random_noise_unet_base/
 │   ├── epoch_0020.pt
 │   ├── epoch_0040.pt
 │   ├── ...
+│   ├── epoch_0200.pt
 │   └── best.pt
 ├── logs/
 │   ├── train_log.txt
@@ -214,6 +219,8 @@ results/random_noise/random_noise_unet_base/
 │   └── epoch_*.png
 └── config_used.yaml
 ```
+
+Checkpoints are saved every `ckpt_interval` epochs up to `epochs`. With the default config (`epochs: 200`, `ckpt_interval: 20`), the final periodic checkpoint is `epoch_0200.pt`.
 
 After inference, the output directory contains:
 
@@ -252,13 +259,15 @@ read_regular_shots(path, traces_per_shot, time_downsample=1)
 
 It returns a NumPy array of shape `(n_shots, n_traces, n_time)` and a dictionary of trace headers. Regularity is verified by checking that each shot slice shares a single `FieldRecord` (FFID) header value.
 
+> **What is a shot gather?** A **shot gather** is a 2D image of seismic **traces** recorded by receivers from one seismic source (one shot). A **trace** is the recording from a single receiver. **FFID** (Field Record ID) is a SEG-Y header value that identifies one shot gather.
+
 For the SEG C3 45-shot volume used in this tutorial:
 
 - `n_shots = 9`
 - `traces_per_shot = 201`
 - `dt = 0.008` s (8 ms sampling interval)
 
-The loaded array shape is `(9, 201, n_time)`.
+The loaded array shape is `(9, 201, n_time)`. The value of `dt` in the config is the one the training script uses for spherical-divergence correction and frequency estimation; it should match the time sampling interval of the source data. Some older documents may list a different `dt` for this volume, so always use the value in the config that matches your file.
 
 #### Switching to NPY or MAT in YAML
 
@@ -285,6 +294,14 @@ data:
 
 All three loaders return a volume of shape `(n_shots, n_traces, n_time)` as `float32`. MAT files are loaded with `scipy.io.loadmat`; if the configured `key` is not present in the file, the loader raises a `KeyError` listing the available variable names.
 
+`key` is only required for MAT files and tells the loader which MATLAB variable contains the volume. If it is omitted, the loader falls back to the first array variable it finds (which may not be the one you want). To inspect the available variable names, run:
+
+```bash
+python -c "import scipy.io; print(list(scipy.io.loadmat('data/SEG_45Shot_shots1-9.mat').keys()))"
+```
+
+Look for the variable whose value has shape `(n_shots, n_traces, n_time)` and use that as `key`.
+
 #### Shape convention
 
 Throughout the repository, a seismic volume is stored as:
@@ -296,10 +313,10 @@ Throughout the repository, a seismic volume is stored as:
 where:
 
 - `n_shots` is the number of shot gathers (or FFIDs).
-- `n_traces` is the number of receiver traces per shot.
+- `n_traces` is the number of receiver traces per shot (a trace is one receiver recording).
 - `n_time` is the number of time samples.
 
-When a 2D conv model operates on a single shot, the patch shape is `(n_traces, n_time)`, with a singleton channel dimension added for the network: `(1, n_traces, n_time)`.
+When a 2D conv model operates on a patch extracted from a single shot, the patch shape is `(1, patch_trace, patch_time)`, where the leading `1` is the channel dimension and `(patch_trace, patch_time)` is the spatial extent of the patch.
 
 ### 4.2 Preprocessing pipeline
 
@@ -367,8 +384,8 @@ The example config uses `noise_kind: gaussian` and `snr_db: 5.0`. Smaller values
 After normalization and noise injection, each shot is cut into overlapping 2D patches for the UNet. The repository uses `tools/patching.py`:
 
 ```python
-patchify_uniform(data, patch_size=(trace, time), overlap=0.0, output_ndim=3|4)
-unpatchify_uniform(patches, info)
+patches, info = patchify_uniform(data, patch_size=(trace, time), overlap=0.0, output_ndim=3|4)
+reconstructed = unpatchify_uniform(patches, info)
 ```
 
 For this example:
@@ -377,7 +394,7 @@ For this example:
 - `patch_overlap = 0.5`
 - `output_ndim = 4`, so patches are returned as `(P, 1, 128, 256)` for direct use by `nn.Conv2d` layers.
 
-`unpatchify_uniform` reconstructs the original shot by averaging overlapping regions (`sum / count`). Overlapping patches reduce edge artifacts during full-shot inference.
+`info` is a small metadata object that records the original array shape, patch grid layout, and overlap so that `unpatchify_uniform` can reconstruct the original shape. Overlapping regions are averaged (`sum / count`), which reduces edge artifacts during full-shot inference.
 
 #### Shot-level split
 
@@ -391,6 +408,8 @@ shot_split:
 ```
 
 The 9 shots are divided sequentially by FFID: the first 7 shots are used for training, the 8th for validation, and the 9th for testing. This prevents data leakage that could occur if patches from the same shot were placed in both train and test sets.
+
+> **Note:** The file name `SEG_45Shot_shots1-9.sgy` refers to the original 45-shot survey; the subset used here contains shots 1-9, which is why `n_shots = 9`.
 
 If `shot_split` is omitted, the code falls back to a patch-level random split.
 
@@ -418,7 +437,7 @@ experiment:
 ```yaml
 data:
   segy:
-    path: /data/liuqi/code/Seismic-bench/seismic-benchmark-code/data/SEG_45Shot_shots1-9.sgy
+    path: data/SEG_45Shot_shots1-9.sgy  # update if your file is elsewhere
     traces_per_shot: 201
     time_downsample: 1
   # npy:
@@ -471,7 +490,10 @@ preprocess:
 - `patch_time` / `patch_trace` — patch size along the time and trace axes.
 - `patch_overlap` — overlap ratio for overlapping patches during inference. `0.0` means no overlap.
 - `max_shots` — optional limit for quick smoke tests. `null` means use all shots.
-- `skip` — list of preprocessing steps to skip. Common examples are `["spherical_divergence_correction"]`, `["normalize"]`, or `["add_noise"]`.
+- `skip` — list of preprocessing step names to skip. `skip` is a YAML list of strings, not a boolean. Examples:
+  - `["spherical_divergence_correction"]` — skip only spherical-divergence correction.
+  - `["spherical_divergence_correction", "normalize", "add_noise"]` — skip all three steps.
+  - `[]` — run every preprocessing step.
 
 #### Model block
 
@@ -487,7 +509,7 @@ model:
 
 `type` must be a name registered in `MODEL_REGISTRY`. The file `model/random_noise_suppression/__init__.py` imports the task models so the decorators run. `params` is passed straight to the model constructor.
 
-For the random-noise suppression task, the registered models include `unet`, `dncnn`, `res_unet`, `atten_unet`, and `SCRN`. You can switch models by changing only `type` and, if necessary, the model-specific `params`. Note that `SCRN` is also available as a registered model, but it is not included in the default `run_all_random_noise_models.sh` sweep; use its individual `train_denoise_SCRN.sh` and `inference_denoise_SCRN.sh` scripts to run it.
+For the random-noise suppression task, the registered models include `unet`, `dncnn`, `res_unet`, and `atten_unet`. You can switch models by changing only `type` and, if necessary, the model-specific `params`. A `SCRN` config and shell scripts exist (`denoise_SCRN.yaml`, `train_denoise_SCRN.sh`, `inference_denoise_SCRN.sh`), but the model implementation is not currently present in `model/random_noise_suppression/`, so selecting `type: scrn` will raise a "model not registered" error.
 
 #### Loss, optimizer, and scheduler blocks
 
@@ -561,8 +583,8 @@ log:
 
 - `epochs` — total number of training epochs.
 - `grad_clip` — gradient clipping value.
-- `log_step` — if `true`, log every training step; otherwise log every `log_interval` steps.
-- `log_interval` — how often to print training-batch summaries.
+- `log_step` — if `true`, log every training step; if `false`, log one summary per epoch (controlled by `log_interval`).
+- `log_interval` — when `log_step` is `false`, this controls how often per-epoch logs and curve plots are refreshed during the epoch. One summary is still written per epoch.
 - `eval_interval` — how often to run validation evaluation.
 - `ckpt_interval` — how often to save periodic checkpoints (`epoch_*.pt`).
 - `vis_interval` — how often to save a random validation visualization.
@@ -576,7 +598,7 @@ log:
 inference:
   data:
     segy:
-      path: /data/liuqi/code/Seismic-bench/seismic-benchmark-code/data/SEG_45Shot_shots1-9.sgy
+      path: data/SEG_45Shot_shots1-9.sgy  # update if your file is elsewhere
       traces_per_shot: 201
       time_downsample: 1
   shot_split:
@@ -601,6 +623,10 @@ inference:
       band_names: ["low", "mid", "high", "very_high"]
       taper_width: 0.0
 ```
+
+> **Warning:** The default `inference.checkpoint` value in the committed config may be an absolute or stale path. Always pass `--checkpoint` explicitly, or update the config to point to the checkpoint produced by your own training run (`results/<exp>/checkpoints/best.pt`).
+
+The binned diagnostics (EB-WSE and FB-FRE) are optional. They are not required to understand the main denoising task, and beginners can set `binned_metrics.enabled: false` to skip them while learning the pipeline.
 
 - `inference.data` — optional inference-specific data source. If omitted, the training `data` block is used.
 - `inference.shot_split` — must match the training split so the test shot is selected consistently.
@@ -635,6 +661,7 @@ results/random_noise/random_noise_unet_base/
 │   ├── epoch_0020.pt
 │   ├── epoch_0040.pt
 │   ├── ...
+│   ├── epoch_0200.pt
 │   └── best.pt
 ├── logs/
 │   ├── train_log.txt
@@ -647,7 +674,7 @@ results/random_noise/random_noise_unet_base/
 └── config_used.yaml
 ```
 
-- `checkpoints/` — periodic checkpoints (`epoch_*.pt`) and `best.pt` (lowest validation loss).
+- `checkpoints/` — periodic checkpoints (`epoch_*.pt`) and `best.pt` (lowest validation loss). Checkpoints are saved every `ckpt_interval` epochs up to `epochs`; with the defaults this produces `epoch_0020.pt`, `epoch_0040.pt`, ..., `epoch_0200.pt`.
 - `logs/` — human-readable log, CSV histories, and auto-refreshed curve plots.
 - `visualizations/` — random validation samples saved every `vis_interval` epochs.
 - `config_used.yaml` — a copy of the resolved config for reproducibility.
@@ -658,22 +685,13 @@ results/random_noise/random_noise_unet_base/
 
 #### Resuming from a checkpoint
 
-At the time of writing, `train_denoise_unet.py` only parses `--config`; a `--resume` CLI flag is not yet implemented. If you need to resume, you can either:
-
-1. Load the checkpoint inside the script before the epoch loop by calling `load_checkpoint(...)` from `utils.train_utils`.
-2. Add a `--resume` argument that calls `load_checkpoint(...)` and restores the optimizer/scheduler state.
-
-The expected command after adding resume support would look like:
-
-```bash
-python scripts/random_noise_suppression/train_denoise_unet.py \
-  --config configs/random_noise_suppression/denoise_unet.yaml \
-  --resume results/random_noise/random_noise_unet_base/checkpoints/epoch_0020.pt
-```
+Resuming is **not** supported via the CLI in the current `train_denoise_unet.py` script. The script only parses `--config`; it does not parse a `--resume` flag and will not restore an optimizer or scheduler state from a previous checkpoint. If you need to resume training, you must edit the script to call `load_checkpoint(...)` from `utils.train_utils` before the epoch loop and restore the optimizer/scheduler state manually.
 
 #### Multi-GPU command
 
 Multi-GPU training uses `torchrun` with one process per GPU:
+
+> **Note:** Multi-GPU training is optional. If you have a single GPU, use the single-GPU command in section 4.4.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 \
@@ -739,7 +757,7 @@ The inference script performs the following steps on the test shots:
 
 - `noisy` — the noisy input compared against the clean target. This is the baseline.
 - `denoised` — the model prediction compared against the clean target.
-- `delta` — the difference `denoised - noisy`, showing how much the model improved (or degraded) each metric.
+- `delta` — the change in each metric from the noisy input to the denoised output (`denoised_metric - noisy_metric`), showing how much the model improved (or degraded) that metric. Positive values usually mean improvement.
 
 `metrics_per_shot.csv` contains the same metrics evaluated per shot, with columns prefixed by `noisy_`, `denoised_`, and `delta_`.
 
@@ -779,6 +797,8 @@ results/random_noise/random_noise_unet_base/inference/
 ### 4.6 Batch Sweeps
 
 For systematic benchmarking, the repository provides shell launchers that sweep over noise kinds, SNR levels, and seeds without manual YAML edits.
+
+> **Note:** The sweep scripts are convenience helpers. Before running them, read the `.sh` file to understand the variables it defines (e.g., `NPROC_PER_NODE`, `TORCHRUN_EXTRA`, `STOP_ON_ERROR`) and confirm the generated experiment names and paths match what you expect.
 
 #### `train_denoise_unet.sh`
 
@@ -884,12 +904,18 @@ Ground-roll attenuation is trained on **paired volumes**: a noisy input volume a
 
 Train a U-Net baseline:
 
+> **Warning:** The default `configs/ground_roll_attenuation/denoise_unet.yaml` contains absolute paths to data that is not included in the repository. Replace `input_path` and `target_path` with paths to your own paired volumes before running the command below.
+
 ```bash
 python scripts/ground_roll_attenuation/train_denoise_unet.py \
   --config configs/ground_roll_attenuation/denoise_unet.yaml
 ```
 
-After training, run the batch evaluator on the experiment directory tree:
+After training, run the batch evaluator on the experiment directory tree. `batch_evaluate.py` requires `openpyxl`; install it first if you have not already:
+
+```bash
+pip install openpyxl
+```
 
 ```bash
 python scripts/ground_roll_attenuation/batch_evaluate.py \
@@ -900,8 +926,6 @@ python scripts/ground_roll_attenuation/batch_evaluate.py \
 ```
 
 `batch_evaluate.py` scans each experiment directory, loads `checkpoints/best.pt`, runs inference on the held-out `test_set/`, and writes an Excel workbook with one sheet per noise level. The workbook compares raw-input metrics (noisy vs reference) and denoised metrics (model output vs reference).
-
-> **Note:** `batch_evaluate.py` requires `openpyxl`: `pip install openpyxl`.
 
 The ground-roll config uses a `data.segy_pair` block (NPY/MAT variants are `npy_pair` / `mat_pair`):
 
@@ -922,12 +946,18 @@ Multiples attenuation follows the same paired-volume setup as ground-roll attenu
 
 Train a U-Net baseline:
 
+> **Warning:** The default `configs/multiples_attenuation/denoise_unet.yaml` contains absolute paths to data that is not included in the repository. Replace `input_path` and `target_path` with paths to your own paired volumes before running the command below.
+
 ```bash
 python scripts/multiples_attenuation/train_denoise_unet.py \
   --config configs/multiples_attenuation/denoise_unet.yaml
 ```
 
-Run the batch evaluator:
+Run the batch evaluator. `batch_evaluate.py` requires `openpyxl`:
+
+```bash
+pip install openpyxl
+```
 
 ```bash
 python scripts/multiples_attenuation/batch_evaluate.py \
@@ -942,6 +972,8 @@ python scripts/multiples_attenuation/batch_evaluate.py \
 Interpolation trains a model to reconstruct missing traces. A single volume is loaded, masked along the trace axis, and the model learns to recover the original traces.
 
 Train a U-Net baseline with uniform 50% missing traces:
+
+> **Warning:** The default `configs/interpolation/interpolation_unet.yaml` contains absolute paths to a SEG-Y volume that is not included in the repository. Update `data.segy.path` (or the active format block) to point to your own volume before running the command below.
 
 ```bash
 python scripts/interpolation/train_interpolation_unet.py \
@@ -1236,12 +1268,91 @@ When adding a step that changes the amplitude scale, remember to update `normali
 
 #### CLI command cheat sheet
 
-| Task | Train | Inference |
-|------|-------|-----------|
-| `random_noise_suppression` | `python scripts/random_noise_suppression/train_denoise_unet.py --config configs/random_noise_suppression/denoise_unet.yaml` | `python scripts/random_noise_suppression/inference_denoise_unet.py --config configs/random_noise_suppression/denoise_unet.yaml --checkpoint results/random_noise/random_noise_unet_base/checkpoints/best.pt --output-dir results/random_noise/random_noise_unet_base/inference --noise-kind gaussian --snr-db 5 --n-viz-shots 5 --device cuda:0` |
-| `ground_roll_attenuation` | `python scripts/ground_roll_attenuation/train_denoise_unet.py --config configs/ground_roll_attenuation/denoise_unet.yaml` | `python scripts/ground_roll_attenuation/batch_evaluate.py --root_dir results/ground_roll_attenuation --output results/ground_roll_attenuation/batch_evaluation.xlsx --device cuda:0 --batch_size 8` |
-| `multiples_attenuation` | `python scripts/multiples_attenuation/train_denoise_unet.py --config configs/multiples_attenuation/denoise_unet.yaml` | `python scripts/multiples_attenuation/batch_evaluate.py --root_dir results/multiples_attenuation --output results/multiples_attenuation/batch_evaluation.xlsx --device cuda:0 --batch_size 8` |
-| `interpolation` | `python scripts/interpolation/train_interpolation_unet.py --config configs/interpolation/interpolation_unet.yaml --mask-mode uniform --mask-ratio 0.5` | `python scripts/interpolation/inference_interpolation.py --config configs/interpolation/interpolation_unet.yaml --checkpoint results/interp_unet_base_uniform_miss50/checkpoints/epoch_0049.pt --output-dir results/interp_unet_base_uniform_miss50/inference --n-viz-shots 5 --device cuda:0` |
+> **Note:** `batch_evaluate.py` for `ground_roll_attenuation` and `multiples_attenuation` requires `openpyxl`. Install it first: `pip install openpyxl`.
+
+##### `random_noise_suppression`
+
+Train:
+
+```bash
+python scripts/random_noise_suppression/train_denoise_unet.py \
+  --config configs/random_noise_suppression/denoise_unet.yaml
+```
+
+Inference:
+
+```bash
+python scripts/random_noise_suppression/inference_denoise_unet.py \
+  --config configs/random_noise_suppression/denoise_unet.yaml \
+  --checkpoint results/random_noise/random_noise_unet_base/checkpoints/best.pt \
+  --output-dir results/random_noise/random_noise_unet_base/inference \
+  --noise-kind gaussian \
+  --snr-db 5 \
+  --n-viz-shots 5 \
+  --device cuda:0
+```
+
+##### `ground_roll_attenuation`
+
+Train:
+
+```bash
+python scripts/ground_roll_attenuation/train_denoise_unet.py \
+  --config configs/ground_roll_attenuation/denoise_unet.yaml
+```
+
+Batch evaluation (requires `openpyxl`):
+
+```bash
+pip install openpyxl
+python scripts/ground_roll_attenuation/batch_evaluate.py \
+  --root_dir results/ground_roll_attenuation \
+  --output results/ground_roll_attenuation/batch_evaluation.xlsx \
+  --device cuda:0 \
+  --batch_size 8
+```
+
+##### `multiples_attenuation`
+
+Train:
+
+```bash
+python scripts/multiples_attenuation/train_denoise_unet.py \
+  --config configs/multiples_attenuation/denoise_unet.yaml
+```
+
+Batch evaluation (requires `openpyxl`):
+
+```bash
+pip install openpyxl
+python scripts/multiples_attenuation/batch_evaluate.py \
+  --root_dir results/multiples_attenuation \
+  --output results/multiples_attenuation/batch_evaluation.xlsx \
+  --device cuda:0 \
+  --batch_size 8
+```
+
+##### `interpolation`
+
+Train:
+
+```bash
+python scripts/interpolation/train_interpolation_unet.py \
+  --config configs/interpolation/interpolation_unet.yaml \
+  --mask-mode uniform \
+  --mask-ratio 0.5
+```
+
+Inference:
+
+```bash
+python scripts/interpolation/inference_interpolation.py \
+  --config configs/interpolation/interpolation_unet.yaml \
+  --checkpoint results/interp_unet_base_uniform_miss50/checkpoints/epoch_0049.pt \
+  --output-dir results/interp_unet_base_uniform_miss50/inference \
+  --n-viz-shots 5 \
+  --device cuda:0
+```
 
 #### YAML top-level keys and common fields
 
@@ -1249,7 +1360,7 @@ When adding a step that changes the amplitude scale, remember to update `normali
 |-----|---------------|
 | `experiment` | `name`, `output_dir`, `seed`, `device` |
 | `data` | Source (`segy`, `npy`, `mat`, `segy_pair`, `npy_pair`, `mat_pair`), `shot_split`, `loader` (`batch_size`, `num_workers`, `pin_memory`) |
-| `preprocess` | `dt`, `t0`, `spherical_power`, `normalize_mode`, `normalize_scope`, `clip_percentile`, `patch_time`, `patch_trace`, `patch_overlap`, `max_shots`, `skip`, `noise_kind`, `snr_db`, `mask_mode`, `mask_ratio`, `uniform_stride` |
+| `preprocess` | `dt`, `t0`, `spherical_power`, `normalize_mode`, `normalize_scope`, `patch_time`, `patch_trace`, `patch_overlap`, `max_shots`, `skip`, `noise_kind`, `snr_db` (random-noise), `mask_mode` (interp only), `mask_ratio` (interp only), `uniform_stride` (interp only), `clip_percentile` (interp only) |
 | `model` | `type`, `params` |
 | `loss` | `type`, `params` |
 | `metrics` | List of `{name, params}` |
@@ -1266,7 +1377,7 @@ When adding a step that changes the amplitude scale, remember to update `normali
 | Model | `@register_model("name")` | `nn.Module` | `build_model(cfg)` | `MODEL_REGISTRY` |
 | Loss | `@register_loss("name")` | `BaseLoss` | `build_loss(cfg)` | `LOSS_REGISTRY` |
 | Metric | `@register_metric("name")` | `BaseMetric` | `build_metrics(cfg_list)` | `METRIC_REGISTRY` |
-| Dataset | `@register_dataset("name")` | `BaseArrayDataset` | `build_dataset(cfg)` / `build_dataloader(cfg)` | `DATASET_REGISTRY` |
+| Dataset | `@register_dataset("name")` | `BaseArrayDataset` | `build_dataset(cfg)` (called internally by the training script) | `DATASET_REGISTRY` |
 
 #### Metric arguments cheat sheet
 
@@ -1275,7 +1386,7 @@ When adding a step that changes the amplitude scale, remember to update `normali
 | `mse` | — | Global mean over all elements. |
 | `mae` | — | Global mean over all elements. |
 | `rmse` | `reduction: per_sample \| global` | `global` preserves `RMSE == sqrt(MSE)`. |
-| `snr` | `reduction`, `eps`, `min_signal_energy` | Signal-to-noise ratio in dB. |
+| `snr` | `reduction`, `eps`, `min_signal_energy` | Signal-to-noise ratio in dB. Use `min_signal_energy` to avoid division by zero on near-zero signal energy shots. |
 | `psnr` | `data_range`, `reduction`, `eps` | Peak amplitude of the reference signal. |
 | `ssim` | `data_range`, `window_size`, `sigma`, `k1`, `k2` | Peak-to-peak range of the reference signal. |
 
