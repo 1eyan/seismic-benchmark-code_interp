@@ -1181,7 +1181,7 @@ preprocess:
   skip: []
 ```
 
-When adding a step that changes the amplitude scale, remember to update `normalize_mode` and metric `data_range` values consistently.
+When adding a step that changes the amplitude scale, remember to update `normalize_mode` and metric `data_range` values consistently. For example, if you scale amplitudes so the peak range becomes `[-2, 2]`, set SSIM `data_range: 4.0` and PSNR `data_range: 2.0`.
 
 ---
 
@@ -1206,7 +1206,7 @@ When adding a step that changes the amplitude scale, remember to update `normali
 
 - Reduce `data.loader.batch_size` or `inference.batch_size`.
 - Reduce `preprocess.patch_trace` or `preprocess.patch_time`.
-- Reduce `inference.n_viz_shots` if visualization is slow.
+- Reduce `inference.n_viz_shots` to lower visualization overhead.
 - Use a smaller model (`base_channels`, `depth`) for memory-constrained GPUs.
 
 **SSIM / PSNR `data_range` mismatch with `normalize_mode`**
@@ -1234,10 +1234,10 @@ When adding a step that changes the amplitude scale, remember to update `normali
 
 | Task | Train | Inference |
 |------|-------|-----------|
-| `random_noise_suppression` | `python scripts/random_noise_suppression/train_denoise_unet.py --config configs/random_noise_suppression/denoise_unet.yaml` | `python scripts/random_noise_suppression/inference_denoise_unet.py --config configs/random_noise_suppression/denoise_unet.yaml --checkpoint results/random_noise/<exp>/checkpoints/best.pt` |
-| `ground_roll_attenuation` | `python scripts/ground_roll_attenuation/train_denoise_unet.py --config configs/ground_roll_attenuation/denoise_unet.yaml` | `python scripts/ground_roll_attenuation/batch_evaluate.py --root_dir results/ground_roll_attenuation --output results/ground_roll_attenuation/batch_evaluation.xlsx` |
-| `multiples_attenuation` | `python scripts/multiples_attenuation/train_denoise_unet.py --config configs/multiples_attenuation/denoise_unet.yaml` | `python scripts/multiples_attenuation/batch_evaluate.py --root_dir results/multiples_attenuation --output results/multiples_attenuation/batch_evaluation.xlsx` |
-| `interpolation` | `python scripts/interpolation/train_interpolation_unet.py --config configs/interpolation/interpolation_unet.yaml --mask-mode uniform --mask-ratio 0.5` | `python scripts/interpolation/inference_interpolation.py --config configs/interpolation/interpolation_unet.yaml --checkpoint results/interp_unet_base_uniform_miss50/checkpoints/epoch_0049.pt` |
+| `random_noise_suppression` | `python scripts/random_noise_suppression/train_denoise_unet.py --config configs/random_noise_suppression/denoise_unet.yaml` | `python scripts/random_noise_suppression/inference_denoise_unet.py --config configs/random_noise_suppression/denoise_unet.yaml --checkpoint results/random_noise/random_noise_unet_base/checkpoints/best.pt --output-dir results/random_noise/random_noise_unet_base/inference --noise-kind gaussian --snr-db 5 --n-viz-shots 5 --device cuda:0` |
+| `ground_roll_attenuation` | `python scripts/ground_roll_attenuation/train_denoise_unet.py --config configs/ground_roll_attenuation/denoise_unet.yaml` | `python scripts/ground_roll_attenuation/batch_evaluate.py --root_dir results/ground_roll_attenuation --output results/ground_roll_attenuation/batch_evaluation.xlsx --device cuda:0 --batch_size 8` |
+| `multiples_attenuation` | `python scripts/multiples_attenuation/train_denoise_unet.py --config configs/multiples_attenuation/denoise_unet.yaml` | `python scripts/multiples_attenuation/batch_evaluate.py --root_dir results/multiples_attenuation --output results/multiples_attenuation/batch_evaluation.xlsx --device cuda:0 --batch_size 8` |
+| `interpolation` | `python scripts/interpolation/train_interpolation_unet.py --config configs/interpolation/interpolation_unet.yaml --mask-mode uniform --mask-ratio 0.5` | `python scripts/interpolation/inference_interpolation.py --config configs/interpolation/interpolation_unet.yaml --checkpoint results/interp_unet_base_uniform_miss50/checkpoints/epoch_0049.pt --output-dir results/interp_unet_base_uniform_miss50/inference --n-viz-shots 5 --device cuda:0` |
 
 #### YAML top-level keys and common fields
 
