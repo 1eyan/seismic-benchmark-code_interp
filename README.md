@@ -27,6 +27,12 @@ Features:
 
 ---
 
+## Tutorial
+
+For a step-by-step guide covering installation, preprocessing, training, evaluation, and adding custom models, see [docs/tutorial.md](docs/tutorial.md).
+
+---
+
 ## Quick Start
 
 ### Training
