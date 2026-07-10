@@ -1206,8 +1206,12 @@ When adding a step that changes the amplitude scale, remember to update `normali
 
 - Reduce `data.loader.batch_size` or `inference.batch_size`.
 - Reduce `preprocess.patch_trace` or `preprocess.patch_time`.
-- Reduce `inference.n_viz_shots` to lower visualization overhead.
 - Use a smaller model (`base_channels`, `depth`) for memory-constrained GPUs.
+
+**Slow visualization**
+
+- Reduce `inference.n_viz_shots` to render fewer shot panels.
+- Lower the figure DPI or turn off visualization if you only need metrics.
 
 **SSIM / PSNR `data_range` mismatch with `normalize_mode`**
 
