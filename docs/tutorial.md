@@ -141,7 +141,7 @@ model:
     base_channels: 32
 ```
 
-Note: model registration requires adding `from . import <file>  # noqa: F401` to `model/<task>/__init__.py` so the decorator runs at import time.
+Note: model registration requires adding `from . import <file>  # noqa: F401` to `model/<task>/__init__.py` so the decorator runs at import time. The top-level `model/__init__.py` only exposes registry primitives (`MODEL_REGISTRY`, `register_model`, `build_model`) and a placeholder model; it does **not** import every concrete model file. Task-specific models are registered only when their task subpackage (`model/<task>/`) is imported.
 
 ### 2.3 Component-agnostic training scripts
 
@@ -280,7 +280,7 @@ data:
   #   key: shots
 ```
 
-All three loaders return a volume of shape `(n_shots, n_traces, n_time)` as `float32`.
+All three loaders return a volume of shape `(n_shots, n_traces, n_time)` as `float32`. MAT files are loaded with `scipy.io.loadmat`; if the file contains more than one variable and no `key` is provided, the loader raises an error asking you to specify the variable name.
 
 #### Shape convention
 
@@ -333,7 +333,15 @@ normalize_scope: shot
 
 This maps each shot to the range `[-1, 1]` by dividing by the maximum absolute value inside that shot. Other supported modes are `minmax` (maps to `[0, 1]`) and `mean_std` (zero mean, unit variance). Other scopes are `trace` and `global`.
 
-`normalize_mode` must agree with the `data_range` settings used by SSIM and PSNR in the `metrics` block. For `max_abs`, SSIM uses `data_range: 2.0` and PSNR uses `data_range: 1.0` (peak absolute amplitude). For `minmax`, both use `data_range: 1.0`.
+`normalize_mode` must agree with the `data_range` settings used by SSIM and PSNR in the `metrics` block. For `max_abs`, SSIM uses `data_range: 2.0` and PSNR uses `data_range: 1.0`. For `minmax`, both use `data_range: 1.0`.
+
+> **Beginner note: why SSIM and PSNR use different `data_range` values**
+>
+> With `max_abs`, the normalized volume spans `[-1, 1]`, so the full range is `max - min = 1 - (-1) = 2.0`. SSIM expects `data_range` to be this full range, so it is set to `2.0`.
+>
+> PSNR, on the other hand, is defined in terms of the peak signal amplitude. For `[-1, 1]` data the peak absolute amplitude is `1.0`, so PSNR uses `data_range: 1.0`.
+>
+> If you switch to `minmax` normalization (`[0, 1]`), the full range and the peak amplitude are both `1.0`, so both SSIM and PSNR use `data_range: 1.0`. Always keep these values consistent with the chosen `normalize_mode`.
 
 #### Synthetic noise injection
 
