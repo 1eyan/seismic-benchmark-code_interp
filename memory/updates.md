@@ -631,3 +631,12 @@
   - Documented `train_denoise_unet.sh`, `inference_denoise_unet.sh`, and `run_all_random_noise_models.sh`, including the default sweep grid (`gaussian`/`poisson`, SNRs `-5`/`0`/`5` dB, seeds `42`/`43`/`44`).
 - Impact: Users can now follow the tutorial end-to-end without reading every source file or shell script.
 - Follow-up: Add a `--resume` flag to `train_denoise_unet.py` if automatic checkpoint resumption becomes a requirement.
+
+## 2026-07-11 - Add Chinese translation of tutorial
+- Context: User requested a Chinese version of the tutorial document alongside the English original.
+- Change:
+  - Added `docs/tutorial_cn.md` — full Chinese translation of `docs/tutorial.md`.
+  - Preserved all headings, code blocks, file paths, CLI flags, and tables; translated only the prose and explanatory comments inside code blocks.
+  - Updated the Chinese table of contents to match the translated section headings and added anchor IDs so internal links remain functional.
+- Impact: Chinese-speaking users can follow the tutorial in their own language without switching between languages.
+- Follow-up: Keep `docs/tutorial_cn.md` in sync with future updates to `docs/tutorial.md`.
