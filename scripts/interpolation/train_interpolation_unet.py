@@ -224,15 +224,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mask-mode",
         type=str,
-        default="continuous",
+        default=None,
         choices=["uniform", "random", "continuous"],
-        help="Trace masking mode.",
+        help="Trace masking mode (uses YAML config when omitted).",
     )
     parser.add_argument(
         "--mask-ratio",
         type=float,
-        default=0.2,
-        help="Trace missing ratio in (0, 1).",
+        default=None,
+        help="Trace missing ratio in (0, 1) (uses YAML config when omitted).",
     )
     parser.add_argument(
         "--continuous-missing-traces",
@@ -247,20 +247,25 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
 
-    # Inject CLI mask args into preprocess config so _build_patch_pairs can read them.
+    # Inject CLI mask args into preprocess config only when explicitly provided.
+    # Otherwise the YAML config values are used (no silent override).
     cfg.setdefault("preprocess", {})
-    cfg["preprocess"]["mask_mode"] = args.mask_mode
-    cfg["preprocess"]["mask_ratio"] = args.mask_ratio
+    if args.mask_mode is not None:
+        cfg["preprocess"]["mask_mode"] = args.mask_mode
+    if args.mask_ratio is not None:
+        cfg["preprocess"]["mask_ratio"] = args.mask_ratio
     if args.continuous_missing_traces is not None:
         cfg["preprocess"]["continuous_missing_traces"] = args.continuous_missing_traces
 
-    if args.mask_mode == "continuous" and args.continuous_missing_traces is not None:
+    mask_mode = cfg["preprocess"].get("mask_mode", "continuous")
+    if mask_mode == "continuous" and args.continuous_missing_traces is not None:
         cfg["experiment"]["name"] = (
-            f"{cfg['experiment']['name']}_{args.mask_mode}_miss{args.continuous_missing_traces}tr"
+            f"{cfg['experiment']['name']}_{mask_mode}_miss{args.continuous_missing_traces}tr"
         )
     else:
-        ratio_pct = int(round(args.mask_ratio * 100))
-        cfg["experiment"]["name"] = f"{cfg['experiment']['name']}_{args.mask_mode}_miss{ratio_pct}"
+        mask_ratio = cfg["preprocess"].get("mask_ratio", 0.2)
+        ratio_pct = int(round(mask_ratio * 100))
+        cfg["experiment"]["name"] = f"{cfg['experiment']['name']}_{mask_mode}_miss{ratio_pct}"
 
     distributed, rank, local_rank, world_size = init_distributed()
 

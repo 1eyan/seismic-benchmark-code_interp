@@ -44,6 +44,8 @@ from tools.preprocessing import (  # noqa: E402
 )
 from utils import count_parameters, load_checkpoint, load_config  # noqa: E402
 from utils.inference_utils import (  # noqa: E402
+    build_binned_metric_kwargs,
+    compute_binned_metrics,
     compute_shot_metrics,
     save_shot_visualizations,
     select_random_shots,
@@ -320,10 +322,6 @@ def main() -> None:
         batch_size=batch_size,
     )
     mask_3d = trace_mask[..., None]
-    if replace_observed:
-        recon_norm = pred_norm
-    else:
-        recon_norm = np.where(mask_3d, pred_norm, shots_norm)
     infer_elapsed = time.time() - infer_start
     print(f"Inference time: {infer_elapsed:.2f}s")
 
@@ -363,12 +361,29 @@ def main() -> None:
         elif m["name"] == "ssim" and "data_range" in m.get("params", {}):
             ssim_data_range = float(m["params"]["data_range"])
 
+    # Scalar metrics on masked positions only (unless replace_observed
+    # is set, in which case all positions are model output).
+    metric_mask = None if replace_observed else mask_3d
     per_shot, mean = compute_shot_metrics(
-        recon_norm, shots_norm,
+        pred_norm, shots_norm,
         metric_names=metric_names,
         psnr_peak=psnr_peak,
         ssim_data_range=ssim_data_range,
+        mask=metric_mask,
     )
+
+    # EB-WSE / FB-FRE binned diagnostics on model output (no GT fill-in).
+    dt = float(prep.get("dt", 0.002))
+    binned_kwargs = build_binned_metric_kwargs(infer_cfg)
+    binned = compute_binned_metrics(pred_norm, shots_norm, dt=dt, **binned_kwargs)
+    if binned:
+        mean.update(binned)
+
+    # Reconstruct full volume for saving.
+    if replace_observed:
+        recon_norm = pred_norm
+    else:
+        recon_norm = np.where(mask_3d, pred_norm, shots_norm)
 
     # --- Inverse preprocessing for output ---
     pred_shots = _inverse(recon_norm)

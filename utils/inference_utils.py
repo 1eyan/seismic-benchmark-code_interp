@@ -164,6 +164,7 @@ def compute_shot_metrics(
     psnr_peak: float = 1.0,
     ssim_data_range: float = 2.0,
     eps: float = 1e-12,
+    mask: Optional[np.ndarray] = None,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
     """Compute per-shot metrics and their means.
 
@@ -179,6 +180,13 @@ def compute_shot_metrics(
     ssim_data_range : peak-to-peak range for SSIM (``L`` in Wang et al. 2004).
                       For ``max_abs`` ``[-1, 1]`` data this is ``2.0``.
     eps             : small constant to avoid division by zero / log of zero.
+    mask            : optional boolean array of same shape as pred_shots.
+                      ``True`` = evaluate this position (missing trace).
+                      When ``None``, all positions are evaluated (backward
+                      compatible). Scalar metrics (MSE/MAE/RMSE/SNR/PSNR)
+                      are computed only on masked positions; SSIM is
+                      computed on the full image with observed positions
+                      filled from target_shots.
 
     Returns
     -------
@@ -189,16 +197,47 @@ def compute_shot_metrics(
         raise ValueError(
             f"Shape mismatch: pred {pred_shots.shape} vs target {target_shots.shape}."
         )
+    if mask is not None and mask.shape != pred_shots.shape:
+        raise ValueError(
+            f"Mask shape {mask.shape} != pred shape {pred_shots.shape}."
+        )
 
     n_shots = pred_shots.shape[0]
     pred = pred_shots.astype(np.float32)
     tgt = target_shots.astype(np.float32)
+    use_mask = mask is not None
+    if use_mask:
+        mask_float = mask.astype(np.float32)
+        counts = mask_float.sum(axis=(1, 2))  # (n_shots,) masked pixels per shot
+        counts = np.maximum(counts, 1)  # avoid div-by-zero on empty shots
+    else:
+        counts = None
 
-    mse_arr = _mse_per_sample_numpy(pred, tgt)
-    mae_arr = _mae_per_sample_numpy(pred, tgt)
-    rmse_arr = _rmse_per_sample_numpy(pred, tgt)
-    snr_arr = _snr_per_sample_numpy(pred, tgt, eps)
-    psnr_arr = _psnr_per_sample_numpy(pred, tgt, psnr_peak, eps)
+    if use_mask:
+        sq_err = (pred - tgt) ** 2
+        sq_err[~mask] = 0.0
+        mse_arr = sq_err.sum(axis=(1, 2)) / counts
+
+        abs_err = np.abs(pred - tgt)
+        abs_err[~mask] = 0.0
+        mae_arr = abs_err.sum(axis=(1, 2)) / counts
+
+        rmse_arr = np.sqrt(mse_arr)
+
+        signal_power = ((tgt ** 2) * mask_float).sum(axis=(1, 2))
+        noise_power = ((pred - tgt) ** 2 * mask_float).sum(axis=(1, 2))
+        ratio = signal_power / np.maximum(noise_power, eps)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            snr_arr = 10.0 * np.log10(ratio)
+        snr_arr = np.where((signal_power == 0.0) & (noise_power == 0.0), np.nan, snr_arr)
+
+        psnr_arr = 10.0 * np.log10((psnr_peak ** 2) / np.maximum(mse_arr, eps))
+    else:
+        mse_arr = _mse_per_sample_numpy(pred, tgt)
+        mae_arr = _mae_per_sample_numpy(pred, tgt)
+        rmse_arr = _rmse_per_sample_numpy(pred, tgt)
+        snr_arr = _snr_per_sample_numpy(pred, tgt, eps)
+        psnr_arr = _psnr_per_sample_numpy(pred, tgt, psnr_peak, eps)
 
     per_shot: Dict[str, np.ndarray] = {}
     mean: Dict[str, float] = {}
@@ -216,7 +255,11 @@ def compute_shot_metrics(
         elif name_lower == "psnr":
             arr = psnr_arr
         elif name_lower == "ssim":
-            arr = _compute_ssim_per_shot(pred, tgt, ssim_data_range)
+            if use_mask:
+                ssim_pred = np.where(mask, pred, tgt)
+            else:
+                ssim_pred = pred
+            arr = _compute_ssim_per_shot(ssim_pred, tgt, ssim_data_range)
         else:
             raise ValueError(f"Unsupported metric for per-shot computation: {name!r}")
         per_shot[name_lower] = arr

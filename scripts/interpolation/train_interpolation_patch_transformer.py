@@ -267,10 +267,11 @@ def main() -> None:
 
     # Build experiment name: distinguish ratio-based vs fixed-trace-continuous.
     mask_mode = str(cfg["preprocess"].get("mask_mode", "continuous"))
-    if mask_mode == "continuous" and args.continuous_missing_traces is not None:
+    continuous_missing_traces = cfg["preprocess"].get("continuous_missing_traces")
+    if mask_mode == "continuous" and continuous_missing_traces is not None:
         cfg["experiment"]["name"] = (
             f"{cfg['experiment']['name']}_{mask_mode}"
-            f"_miss{args.continuous_missing_traces}tr"
+            f"_miss{continuous_missing_traces}tr"
         )
     else:
         mask_ratio = float(cfg["preprocess"].get("mask_ratio", 0.2))
