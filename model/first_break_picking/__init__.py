@@ -1,6 +1,6 @@
 """Models registered for the first-break-picking task.
 
-This package mirrors the U-Net family used by coherent-noise attenuation, but
+This package mirrors the U-Net family used by the attenuation tasks, but
 keeps the importable underscore path for first-break experiments.
 """
 

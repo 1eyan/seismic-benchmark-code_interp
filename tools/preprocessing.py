@@ -360,6 +360,12 @@ def normalize(
         if override_stats is not None:
             xmin = np.asarray(override_stats["min"], dtype=x.dtype)
             xmax = np.asarray(override_stats["max"], dtype=x.dtype)
+            if per == "shot":
+                xmin = xmin.reshape(-1, 1, 1)
+                xmax = xmax.reshape(-1, 1, 1)
+            elif per == "trace":
+                xmin = xmin.reshape(n_shots, n_traces, 1)
+                xmax = xmax.reshape(n_shots, n_traces, 1)
         else:
             xmin = x.min(axis=axes, keepdims=True)
             xmax = x.max(axis=axes, keepdims=True)
@@ -369,6 +375,10 @@ def normalize(
     elif mode == "max_abs":
         if override_stats is not None:
             m = np.asarray(override_stats["max_abs"], dtype=x.dtype)
+            if per == "shot":
+                m = m.reshape(-1, 1, 1)
+            elif per == "trace":
+                m = m.reshape(n_shots, n_traces, 1)
         else:
             m = np.abs(x).max(axis=axes, keepdims=True)
         out = x / np.maximum(m, _EPS)
@@ -377,6 +387,12 @@ def normalize(
         if override_stats is not None:
             mu = np.asarray(override_stats["mean"], dtype=x.dtype)
             sd = np.asarray(override_stats["std"], dtype=x.dtype)
+            if per == "shot":
+                mu = mu.reshape(-1, 1, 1)
+                sd = sd.reshape(-1, 1, 1)
+            elif per == "trace":
+                mu = mu.reshape(n_shots, n_traces, 1)
+                sd = sd.reshape(n_shots, n_traces, 1)
         else:
             mu = x.mean(axis=axes, keepdims=True)
             sd = x.std(axis=axes, keepdims=True)
@@ -463,31 +479,3 @@ def inverse_spherical_divergence_correction(
     t = np.maximum(t, dt)
     gain = t ** power
     return _restore(x / gain, was_2d)
-
-
-def first_pick_from_mask(
-    mask: np.ndarray,
-    threshold: float = 0.5,
-    valid_mask: Optional[np.ndarray] = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Extract first-arrival sample indices from a binary probability mask.
-
-    Parameters
-    ----------
-    mask       : 2D numpy array of shape ``(traces, time)`` with values in [0, 1].
-    threshold  : probability threshold applied to binarise the mask.
-    valid_mask : optional boolean array same shape as ``mask``; where ``False``,
-                 the pick is forced to be invalid regardless of the mask value.
-
-    Returns
-    -------
-    pick : ``(traces,)`` float32 array; the time index of the first ``True``
-           pixel per trace (0 when no pick).
-    valid : ``(traces,)`` bool array; whether any pick was found.
-    """
-    binary = np.asarray(mask) > float(threshold)
-    if valid_mask is not None:
-        binary = binary & np.asarray(valid_mask)
-    valid = binary.any(axis=1)
-    pick = np.argmax(binary, axis=1)
-    return pick.astype(np.float32), valid

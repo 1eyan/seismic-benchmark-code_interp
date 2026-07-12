@@ -45,6 +45,8 @@ from tools.preprocessing import (  # noqa: E402
 )
 from utils import count_parameters, load_checkpoint, load_config, set_seed  # noqa: E402
 from utils.inference_utils import (  # noqa: E402
+    build_binned_metric_kwargs,
+    compute_binned_metrics,
     compute_shot_metrics,
     inference_on_shots,
     save_shot_visualizations,
@@ -354,6 +356,26 @@ def main() -> None:
         delta_per_shot[key] = delta_arr
         delta_mean[key] = round(float(np.nanmean(delta_arr)), 6)
 
+    dt = float(prep.get("dt", 0.002))
+    binned_kwargs = build_binned_metric_kwargs(infer_cfg)
+    noisy_binned_mean = compute_binned_metrics(noisy_norm, shots_norm, dt=dt, **binned_kwargs)
+    denoised_binned_mean = compute_binned_metrics(pred_norm, shots_norm, dt=dt, **binned_kwargs)
+
+    delta_binned_mean: Dict[str, Optional[float]] = {}
+    for key in noisy_binned_mean:
+        if key.endswith("_frequency_range_hz") or key.endswith("_energy_ratio"):
+            continue
+        n = noisy_binned_mean[key]
+        d = denoised_binned_mean[key]
+        if n is None or d is None:
+            delta_binned_mean[key] = None
+        else:
+            delta_binned_mean[key] = round(d - n, 6)
+
+    noisy_mean.update(noisy_binned_mean)
+    denoised_mean.update(denoised_binned_mean)
+    delta_mean.update(delta_binned_mean)
+
     pred_shots = _inverse(pred_norm)
     target_shots = _inverse(shots_norm)
     input_shots = _inverse(noisy_norm)
@@ -435,13 +457,28 @@ def main() -> None:
     print("Mean metrics (normalized domain):")
     print("  Noisy vs target:")
     for k, v in noisy_mean.items():
-        print(f"    {k}: {format_metric_value(k, v)}")
+        if isinstance(v, list):
+            print(f"    {k}: {v}")
+        elif v is None:
+            print(f"    {k}: N/A")
+        else:
+            print(f"    {k}: {format_metric_value(k, v)}")
     print("  Denoised vs target:")
     for k, v in denoised_mean.items():
-        print(f"    {k}: {format_metric_value(k, v)}")
+        if isinstance(v, list):
+            print(f"    {k}: {v}")
+        elif v is None:
+            print(f"    {k}: N/A")
+        else:
+            print(f"    {k}: {format_metric_value(k, v)}")
     print("  Delta (denoised - noisy):")
     for k, v in delta_mean.items():
-        print(f"    {k}: {format_metric_value(k, v)}")
+        if isinstance(v, list):
+            print(f"    {k}: {v}")
+        elif v is None:
+            print(f"    {k}: N/A")
+        else:
+            print(f"    {k}: {format_metric_value(k, v)}")
 
 
 if __name__ == "__main__":

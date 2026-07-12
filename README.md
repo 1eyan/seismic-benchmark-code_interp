@@ -1,4 +1,4 @@
-# Benchmark Code — Exploration Geophysics Data Processing Benchmark Template
+# Benchmark Code - Exploration Geophysics Data Processing Benchmark Template
 
 A PyTorch benchmark template for seismic data processing, supporting interpolation, denoising, and supervised restoration on SEG-Y / NPY / MAT volumes.
 
@@ -10,20 +10,20 @@ Features:
 - **Shot-level splitting** — split train/val/test by unique FFID (sequential order) instead of random patch-level split, preventing data leakage.
 - **Best-validation checkpoint** — automatically retains `best.pt` (lowest val loss) independently of the periodic `epoch_*.pt` snapshots.
 - **Unified visualization** — consistent symmetric color scale across input, prediction, target, and residual panels.
-- **Inference** — full-shot reconstruction, per-shot metrics (MSE, RMSE, MAE, SNR, PSNR, SSIM), visualization, and optional `.npy` export.
+- **Inference** — full-shot reconstruction, per-shot metrics (MSE, RMSE, MAE, SNR, PSNR, SSIM), energy-binned (EB-WSE) and frequency-binned (FB-FRE) diagnostics, visualization, and optional `.npy` export.
 
 ---
 
 ## Directory Overview
 
-- **tools/** — Data utilities: I/O (`array_io.py`, `segy_read.py`), preprocessing (`preprocessing.py`), patching (`patching.py`).
-- **model/** — `nn.Module` definitions and `MODEL_REGISTRY`. UNet, Res-UNet, DnCNN, Attention U-Net are registered and selectable from YAML.
-- **utils/** — Training infrastructure: datasets, losses, metrics, visualization, logging, optimizer/scheduler builders, train/eval loops, DDP helpers, checkpoint I/O.
-- **configs/** — One YAML file per experiment; hyper-parameters are never hard-coded in source.
-- **scripts/** — CLI entry points for training (`train_*.py`) and inference (`inference_*.py`), plus bash launchers (`*.sh`).
-- **results/** — Experiment outputs (checkpoints, logs, CSVs, PNGs). Not tracked by Git.
-- **memory/** — Project memory: design decisions, update log, techniques, research references.
-- **.cursor/rules/** — Agent rule files (`*.mdc`).
+- **tools/** - Data utilities: I/O (`array_io.py`, `segy_read.py`), preprocessing (`preprocessing.py`), patching (`patching.py`).
+- **model/** - `nn.Module` definitions and `MODEL_REGISTRY`. Task subpackages register their own model implementations.
+- **utils/** - Training infrastructure: datasets, losses, metrics, visualization, logging, optimizer/scheduler builders, train/eval loops, DDP helpers, checkpoint I/O.
+- **configs/** - One YAML file per experiment; hyper-parameters are never hard-coded in source.
+- **scripts/** - CLI entry points for training (`train_*.py`) and inference (`inference_*.py`), plus bash launchers (`*.sh`).
+- **results/** - Experiment outputs (checkpoints, logs, CSVs, PNGs). Not tracked by Git.
+- **memory/** - Project memory: design decisions, update log, techniques, research references.
+- **.cursor/rules/** - Agent rule files (`*.mdc`).
 
 ---
 
@@ -38,8 +38,14 @@ python scripts/interpolation/train_interpolation_unet.py --config configs/interp
 # Paired supervised training (input + target volumes)
 python scripts/interpolation/train_paired_unet.py --config configs/interpolation/paired_unet.yaml
 
-# Denoising (paired noisy / clean volumes)
-python scripts/coherent_noise_attenuation/train_denoise_res_unet.py --config configs/coherent_noise_attenuation/denoise_res_unet.yaml
+# Ground-roll attenuation (paired noisy / noise-label volumes)
+python scripts/ground_roll_attenuation/train_denoise_res_unet.py --config configs/ground_roll_attenuation/denoise_res_unet.yaml
+
+# Multiples attenuation (paired noisy / noise-label volumes)
+python scripts/multiples_attenuation/train_denoise_res_unet.py --config configs/multiples_attenuation/denoise_res_unet.yaml
+
+# Random-noise suppression (synthetic noise injection on clean volume)
+python scripts/random_noise_suppression/train_denoise_unet.py --config configs/random_noise_suppression/denoise_unet.yaml
 
 # DDP multi-GPU
 CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 scripts/interpolation/train_interpolation_unet.py --config configs/interpolation/interpolation_unet.yaml
@@ -48,10 +54,22 @@ CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 scripts/interpolation/train
 ### Inference
 
 ```bash
+# Interpolation
 python scripts/interpolation/inference_interpolation.py \
   --config configs/interpolation/interpolation_unet.yaml \
   --checkpoint results/<exp_name>/checkpoints/epoch_0049.pt
+
+# Random-noise suppression (UNet; DnCNN, ResUNet, Attention-UNet, SCRN use their own configs)
+python scripts/random_noise_suppression/inference_denoise_unet.py \
+  --config configs/random_noise_suppression/denoise_unet.yaml \
+  --checkpoint results/random_noise/random_noise_unet_base/checkpoints/best.pt \
+  --output-dir results/random_noise/random_noise_unet_base/inference \
+  --noise-kind gaussian \
+  --snr-db 5 \
+  --n-viz-shots 5
 ```
+
+Random-noise suppression inference outputs `metrics_summary.json` with scalar metrics plus mean EB-WSE and FB-FRE diagnostics.
 
 See `使用说明.md` (Chinese) for detailed usage, config schema, and FAQ.
 

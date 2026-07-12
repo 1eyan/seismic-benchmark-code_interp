@@ -120,7 +120,12 @@ def _snr_numpy(pred: np.ndarray, target: np.ndarray, eps: float = _EPS) -> float
     return float(10.0 * np.log10(signal / noise))
 
 
-def _snr_per_sample_numpy(pred: np.ndarray, target: np.ndarray, eps: float = _EPS) -> np.ndarray:
+def _snr_per_sample_numpy(
+    pred: np.ndarray,
+    target: np.ndarray,
+    eps: float = _EPS,
+    min_signal_energy: float = 0.0,
+) -> np.ndarray:
     axes = _reduce_axes(target)
     signal = (target ** 2).sum(axis=axes)
     noise = ((pred - target) ** 2).sum(axis=axes)
@@ -129,6 +134,8 @@ def _snr_per_sample_numpy(pred: np.ndarray, target: np.ndarray, eps: float = _EP
         snr = 10.0 * np.log10(ratio)
     # signal=0, noise=0 -> nan (0/0 undefined)
     snr = np.where((signal == 0.0) & (noise == 0.0), np.nan, snr)
+    if min_signal_energy > 0.0:
+        snr = np.where(signal < min_signal_energy, np.nan, snr)
     return snr
 
 
@@ -251,26 +258,47 @@ class SNR(BaseMetric):
 
     Parameters
     ----------
-    reduction : ``"per_sample"`` (default) or ``"global"``.
-    eps       : clamp applied to power terms; default ``1e-12``.
+    reduction         : ``"per_sample"`` (default) or ``"global"``.
+    eps               : clamp applied to power terms; default ``1e-12``.
+    min_signal_energy : per-sample target energy below which samples are skipped;
+                        only applies to ``reduction="per_sample"``. Default 0
+                        preserves the original behavior.
     """
 
     higher_is_better = True
 
     def __init__(
-        self, reduction: Reduction = "per_sample", eps: float = _EPS
+        self,
+        reduction: Reduction = "per_sample",
+        eps: float = _EPS,
+        min_signal_energy: float = 0.0,
     ) -> None:
         _check_reduction("SNR", reduction)
         if eps <= 0:
             raise ValueError(f"eps must be > 0, got {eps}.")
+        if min_signal_energy < 0:
+            raise ValueError(
+                f"min_signal_energy must be >= 0, got {min_signal_energy}."
+            )
         self.reduction = reduction
         self.eps = eps
+        self.min_signal_energy = float(min_signal_energy)
 
     def __call__(self, pred: torch.Tensor, target: torch.Tensor) -> float:
         pred, target = _prepare(pred, target, "SNR")
         if self.reduction == "global":
             return _snr_numpy(pred.cpu().numpy(), target.cpu().numpy(), self.eps)
-        return float(_snr_per_sample_numpy(pred.cpu().numpy(), target.cpu().numpy(), self.eps).mean())
+        values = _snr_per_sample_numpy(
+            pred.cpu().numpy(),
+            target.cpu().numpy(),
+            self.eps,
+            self.min_signal_energy,
+        )
+        if self.min_signal_energy > 0.0:
+            if np.all(np.isnan(values)):
+                return float("nan")
+            return float(np.nanmean(values))
+        return float(values.mean())
 
 
 @register_metric("psnr")

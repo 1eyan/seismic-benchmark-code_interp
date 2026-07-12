@@ -36,6 +36,10 @@ results/
 *.h5
 *.hdf5
 
+# Raw data directories
+data/
+result/
+
 # Logs and generated CSV/plots
 *.log
 *.csv

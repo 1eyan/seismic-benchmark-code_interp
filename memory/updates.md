@@ -603,3 +603,99 @@
   - `model/interpolation/guo2023_mst_notes.md` (new) — paper citation, architecture diagram, classification table, paper audit summary, attention complexity analysis, conservative profile documentation, future verification checklist.
 - Impact: A Multi-Scale Transformer is available for interpolation. The implementation faithfully preserves the paper's core methodology: multi-scale seismic feature maps with independent self-attention at each scale to capture long-range dependencies. The token-count guard prevents silent OOM from O(N²) attention on large feature maps. 三个尺度、32/64/128 通道、Transformer 深度、Attention Head、Pre-LN、GELU、位置编码和多尺度融合方式均属于可追踪的 Conservative Reproduction Profile，待原论文全文获取后逐一验证更新。
 - Follow-up: When the full paper PDF becomes available, verify and update: exact scale count, channel dimensions, transformer depth, head counts, norm position (Pre-LN vs Post-LN), activation function, positional encoding scheme, fusion method, upsampling/downsampling methods, and whether global residual learning is used.
+
+## 2026-06-29 - Split coherent-noise attenuation task references
+
+- Context: The former `coherent_noise_attenuation` task was split into `ground_roll_attenuation` and `multiples_attenuation`; copied configs/scripts/models still contained stale imports, paths, comments, and documentation references to the old task name.
+- Change:
+  - Updated ground-roll scripts, shell launchers, model imports, README examples, and batch-evaluation defaults to use `ground_roll_attenuation`.
+  - Updated multiples scripts, shell launchers, model imports, configs, README examples, and batch-evaluation defaults to use `multiples_attenuation`; multiples model package now imports only the model files that exist in that subtask.
+  - Renamed the benchmark document to `docs/benchmark_ground_roll_attenuation.md`; updated top-level README, Chinese usage guide, and HF model upload/download defaults away from the old coherent-noise task name.
+- Impact: New task directories are self-contained and no regular source/docs path references the deleted `coherent_noise_attenuation` package. `memory/updates.md` keeps older entries unchanged as historical records.
+- Follow-up: When multiples SEG-Y data is generated, verify the configured `/data/shared/benchmark/multiples` paths against the actual data root.
+
+## 2026-06-29 - Migrate EB-WSE and FB-FRE metrics from test/ to utils/
+
+- Context: The EB-WSE and FB-FRE metrics were developed under `test/` for rapid iteration. They are now stable enough to live in `utils/` alongside the other evaluation infrastructure.
+- Change:
+  - Moved `test/energy_binned_metrics.py` to `utils/eb_wse_metrics.py`.
+  - Moved `test/frequency_binned_metrics.py` to `utils/fb_fre_metrics.py`.
+  - Re-exported `energy_binned_weak_signal_metrics` from `utils/__init__.py`.
+  - Re-exported `compute_average_amplitude_spectrum`, `estimate_effective_band`, `build_auto_bands`, and `frequency_binned_fidelity_metrics` from `utils/__init__.py`.
+  - Updated `test/run_baseline_evaluation.py` to import EB-WSE and FB-FRE from `utils`.
+  - Left O-LPSL (`test/orthogonalized_local_projected_signal_leakage.py`) and the evaluation runner in `test/` for now.
+## 2026-06-29 - Add EB-WSE and FB-FRE metrics to random_noise_suppression inference scripts
+
+- Context: The random_noise_suppression inference scripts only reported the six scalar reconstruction metrics (MSE, RMSE, MAE, SNR, PSNR, SSIM). Users need energy-binned and frequency-binned diagnostics to assess weak-signal recovery and frequency preservation.
+- Change:
+  - Added `compute_binned_metrics(pred_shots, target_shots, dt)` to `utils/inference_utils.py`. It computes EB-WSE (NE/SNR per energy bin) and FB-FRE (NE/SNR per adaptive frequency band) using the migrated `utils/eb_wse_metrics.py` and `utils/fb_fre_metrics.py` modules, then returns the mean over all shots. FB-FRE uses `rel_threshold=0.001` (0.1% of peak power) to define the effective frequency band.
+  - Updated all five `scripts/random_noise_suppression/inference_denoise_*.py` scripts (UNet, DnCNN, ResUNet, Attention UNet, SCRN) to call `compute_binned_metrics` for both the noisy baseline and the denoised result, compute deltas (denoised - noisy), and merge the mean binned metrics into `metrics_summary.json`.
+  - Flattened binned metric keys for JSON compatibility: `eb_wse_very_weak_5_20_ne`, `eb_wse_very_weak_5_20_snr`, `fb_fre_low_ne`, `fb_fre_low_snr`, `fb_fre_low_energy_ratio`, `fb_fre_low_frequency_range_hz`, etc.
+- Impact: Every random-noise-suppression inference run now automatically outputs mean EB-WSE and FB-FRE diagnostics alongside scalar metrics in `metrics_summary.json`, without requiring config changes or adding per-shot CSV columns. O-LPSL remains excluded per the current scope.
+- Follow-up: Consider exposing optional energy-bin and frequency-band overrides via YAML or CLI if users need per-dataset customization.
+
+## 2026-06-30 - Review fixes for EB-WSE/FB-FRE integration
+
+- Context: Review of the `feature/integrated-metrics` branch found a broken baseline-evaluation script, inconsistent FB-FRE thresholds, and non-finite JSON values in degenerate cases.
+- Change:
+  - Removed `test/run_baseline_evaluation.py`; its functionality is expected to be covered by the existing random-noise-suppression inference scripts.
+  - Changed the default `rel_threshold` in `utils/fb_fre_metrics.py` (`estimate_effective_band` and `frequency_binned_fidelity_metrics`) from `0.0001` to `0.001` so it matches the 0.1% threshold used by `compute_binned_metrics` in `utils/inference_utils.py`.
+  - Hardened `compute_binned_metrics` against non-finite outputs: NaN is serialized as `None` (JSON `null`), positive infinity is capped at `999.0`, and negative infinity is capped at `-999.0`. This keeps `metrics_summary.json` strictly standard-JSON compliant even for all-zero or perfect-prediction edge cases.
+  - Guarded the FB-FRE SNR `log10` call to avoid a `RuntimeWarning` when a band has zero reference energy.
+  - Updated all five `scripts/random_noise_suppression/inference_denoise_*.py` scripts to handle `None` values when computing deltas and printing mean metrics.
+- Impact: The inference pipeline is more robust, the FB-FRE threshold is consistent across all call sites, and the baseline-evaluation file that could not run is no longer present.
+- Follow-up: Verify all five inference scripts on their respective checkpoints once available; consider adding unit tests for `compute_binned_metrics` edge cases.
+
+## 2026-06-30 - Update READMEs to match latest code
+
+- Context: The root `README.md`, `scripts/README.md`, and `utils/README.md` did not reflect the current random-noise suppression inference scripts or the EB-WSE/FB-FRE diagnostics.
+- Change:
+  - Updated `README.md` to list random-noise suppression training/inference examples and to mention EB-WSE/FB-FRE diagnostics in the feature list and inference section.
+  - Rewrote `scripts/README.md` to describe the actual task-specific scripts (interpolation, random-noise suppression, ground-roll attenuation, multiples attenuation, first-break picking) and added an inference section documenting `metrics_summary.json` outputs.
+  - Updated `utils/README.md` to include `inference_utils.py` and its helpers (`inference_on_shots`, `compute_shot_metrics`, `compute_binned_metrics`).
+- Impact: READMEs now match the current codebase and guide users to the new inference metrics.
+- Follow-up: Keep READMEs in sync when adding new task scripts or inference outputs.
+
+## 2026-06-30 - Add EB-WSE and FB-FRE metric documentation
+- Context: The EB-WSE and FB-FRE metrics were integrated into the random-noise suppression inference scripts, but their formulas, output keys, and interpretation were not documented outside the source code.
+- Change:
+  - Added `docs/metrics/eb_wse.md` with the energy-map construction, default percentile bins, NE/SNR formulas, output key naming, and interpretation guide.
+  - Added `docs/metrics/fb_fre.md` with the effective-band estimation, adaptive band splitting, band-pass filtering, NE/SNR/energy-ratio formulas, output key naming, and interpretation guide.
+  - Appended EB-WSE and FB-FRE entries to `memory/techniques.md` as landed techniques, including use case, location, reference, and known limits.
+- Impact: Contributors and users can now read standalone metric documentation without reverse-engineering `utils/eb_wse_metrics.py` or `utils/fb_fre_metrics.py`.
+- Follow-up: Update the docs if the default bins, band ratios, or reported statistics change in the future.
+
+## 2026-06-30 - Add Chinese metric explanation documents
+- Context: The English metric docs were added, but the user requested Chinese versions for easier local reading alongside the existing `使用说明.md`.
+- Change:
+  - Added `docs/metrics/eb_wse_cn.md` — Chinese translation of the EB-WSE formulas, algorithm, output keys, and interpretation guide.
+  - Added `docs/metrics/fb_fre_cn.md` — Chinese translation of the FB-FRE formulas, effective-band estimation, adaptive band splitting, output keys, and interpretation guide.
+- Impact: Chinese-speaking users can read the metric definitions directly without switching languages.
+- Follow-up: Keep Chinese docs in sync with the English versions when formulas or defaults change.
+
+## 2026-07-01 - Make EB-WSE/FB-FRE inference metrics configurable via YAML
+- Context: The EB-WSE/FB-FRE diagnostics in `utils/inference_utils.py::compute_binned_metrics` used hard-coded bins, thresholds, and band ratios, and could not be disabled without editing code.
+- Change:
+  - Extended `compute_binned_metrics` to accept keyword arguments: `eb_enabled`, `eb_bins`, `eb_smooth_sigma`, `fb_enabled`, `fb_rel_threshold`, `fb_band_ratios`, `fb_band_names`, `fb_taper_width`. Missing arguments keep the previous defaults, preserving backward compatibility.
+  - Added `build_binned_metric_kwargs(infer_cfg)` helper in `utils/inference_utils.py` to parse the `inference.binned_metrics` YAML block and convert it into the keyword arguments expected by `compute_binned_metrics`.
+  - Updated all five `scripts/random_noise_suppression/inference_denoise_*.py` scripts to call `build_binned_metric_kwargs(infer_cfg)` and forward the resulting kwargs to both noisy-baseline and denoised binned-metric computations.
+  - Added `inference.binned_metrics` blocks to all five `configs/random_noise_suppression/denoise_*.yaml` files, explicitly declaring `enabled`, `eb_wse` bins/smooth_sigma, and `fb_fre` threshold/ratios/names/taper_width.
+  - Updated English (`docs/metrics/eb_wse.md`, `docs/metrics/fb_fre.md`) and Chinese (`docs/metrics/eb_wse_cn.md`, `docs/metrics/fb_fre_cn.md`) metric documentation with configuration examples.
+- Impact: EB-WSE/FB-FRE parameters are now first-class YAML hyper-parameters. Users can turn either diagnostic on/off, change energy bins, adjust the effective-band threshold, or redefine frequency-band widths without modifying source code.
+- Follow-up: Consider exposing a top-level CLI override (e.g. `--disable-binned-metrics`) if users frequently need to toggle these at runtime.
+
+## 2026-07-01 - Fix SyntaxError in `utils/inference_utils.py`
+- Context: The previous edit to insert `build_binned_metric_kwargs` accidentally removed the `def select_random_shots(` prefix, causing an `unmatched ')'` SyntaxError on import.
+- Change:
+  - Restored the complete `def select_random_shots(...)` function signature in `utils/inference_utils.py`.
+- Impact: The five random-noise suppression inference scripts can import `utils.inference_utils` again.
+- Follow-up: None.
+
+## 2026-07-01 - Add detailed comments to random_noise_suppression configs
+- Context: The five `configs/random_noise_suppression/denoise_*.yaml` files had minimal inline comments, making it hard to see how key parameters affect training, inference, and the new binned metrics.
+- Change:
+  - Added block-level comments to `preprocess`, `metrics`, and `inference` sections in all five configs.
+  - Documented the meaning and units of `dt`, `noise_kind`, `snr_db`, `normalize_mode`, `normalize_scope`, patch sizes, `patch_overlap`, `skip`, and the relationship between normalization and PSNR/SSIM `data_range`.
+  - Added detailed comments for the `inference.binned_metrics` block: master switch, EB-WSE bins/smooth_sigma, and FB-FRE `rel_threshold`, `band_ratios`, `band_names`, `taper_width`.
+- Impact: Users can now understand and tune the configs without reading the source code.
+- Follow-up: Keep comments updated when defaults or config schema change.
