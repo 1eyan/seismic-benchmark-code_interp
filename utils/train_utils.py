@@ -422,18 +422,30 @@ def train_one_epoch(
     total_loss = 0.0
     n_batches = 0
     for step, batch in enumerate(loader):
-        if isinstance(batch, (tuple, list)) and len(batch) == 2:
-            x, y = batch
+        if isinstance(batch, (tuple, list)):
+            if len(batch) == 2:
+                x, y = batch
+                extras: Dict[str, Any] = {}
+            elif len(batch) >= 3:
+                x, y = batch[0], batch[1]
+                extras = {"mask": batch[2]}
+                for ei, extra in enumerate(batch[3:], start=3):
+                    extras[f"extra_{ei}"] = extra
+            else:
+                raise ValueError("train_one_epoch expects loader batch with >=2 elements.")
         else:
-            raise ValueError("train_one_epoch expects loader batch as (input, target).")
+            raise ValueError("train_one_epoch expects loader batch as tuple/list.")
         if y is None:
             raise ValueError("train_one_epoch requires supervised targets.")
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
+        for k in extras:
+            if isinstance(extras[k], torch.Tensor):
+                extras[k] = extras[k].to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
         pred = model(x)
-        loss = loss_fn(pred, y)
+        loss = loss_fn(pred, y, **extras)
         loss.backward()
         if grad_clip and grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
@@ -491,17 +503,27 @@ def evaluate(
     metric_sums: Dict[str, float] = {k: 0.0 for k in (metrics or {})}
     metric_counts: Dict[str, int] = {k: 0 for k in (metrics or {})}
     for batch in loader:
-        if isinstance(batch, (tuple, list)) and len(batch) == 2:
-            x, y = batch
+        if isinstance(batch, (tuple, list)):
+            if len(batch) == 2:
+                x, y = batch
+                extras_eval: Dict[str, Any] = {}
+            elif len(batch) >= 3:
+                x, y = batch[0], batch[1]
+                extras_eval = {"mask": batch[2]}
+            else:
+                raise ValueError("evaluate expects loader batch with >=2 elements.")
         else:
-            raise ValueError("evaluate expects loader batch as (input, target).")
+            raise ValueError("evaluate expects loader batch as tuple/list.")
         if y is None:
             raise ValueError("evaluate requires supervised targets.")
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
+        for k in extras_eval:
+            if isinstance(extras_eval[k], torch.Tensor):
+                extras_eval[k] = extras_eval[k].to(device, non_blocking=True)
 
         pred = model(x)
-        loss = loss_fn(pred, y)
+        loss = loss_fn(pred, y, **extras_eval)
         total_loss += float(loss.detach().item())
         n_batches += 1
 
@@ -549,8 +571,7 @@ def evaluate(
 
 
 def _make_dataloader(
-    x: torch.Tensor,
-    y: torch.Tensor,
+    *tensors: torch.Tensor,
     cfg: Dict[str, Any],
     shuffle: bool,
     sampler: Optional[DistributedSampler] = None,
@@ -560,7 +581,7 @@ def _make_dataloader(
     batch_size = int(loader_cfg.get("batch_size", 8))
     num_workers = int(loader_cfg.get("num_workers", 0))
     pin_memory = bool(loader_cfg.get("pin_memory", True))
-    ds = TensorDataset(x, y)
+    ds = TensorDataset(*tensors)
     if sampler is not None:
         return DataLoader(
             ds,
@@ -584,7 +605,7 @@ def _make_dataloader(
 def build_loaders(
     cfg: Dict[str, Any],
     *,
-    build_patch_pairs_fn: Callable[[Dict[str, Any]], Tuple[np.ndarray, np.ndarray]],
+    build_patch_pairs_fn: Callable[[Dict[str, Any]], Tuple[np.ndarray, ...]],
     rank: int = 0,
     world_size: int = 1,
     distributed: bool = False,
@@ -599,7 +620,9 @@ def build_loaders(
     Parameters
     ----------
     cfg                  : experiment config dict.
-    build_patch_pairs_fn : callable ``cfg -> (input_patches, target_patches)``.
+    build_patch_pairs_fn : callable ``cfg -> (input_patches, target_patches, ...)``.
+                           May return an optional third tensor (e.g. mask) that is
+                           included in the batch tuple passed to the loss.
     rank, world_size, distributed : DDP controls (see :func:`init_distributed`).
 
     Returns
@@ -607,9 +630,12 @@ def build_loaders(
     train_loader, test_loader, train_sampler, eval_train_loader
         ``eval_train_loader`` is ``None`` on non-zero ranks under DDP.
     """
-    x, y = build_patch_pairs_fn(cfg)
+    result = build_patch_pairs_fn(cfg)
+    if not isinstance(result, (tuple, list)):
+        result = (result,)
+    arrays = [np.asarray(a) for a in result]
     split = float(cfg["data"].get("test_ratio", cfg["data"].get("val_ratio", 0.1)))
-    n_total = x.shape[0]
+    n_total = arrays[0].shape[0]
     n_test = max(1, int(round(n_total * split)))
     n_train = max(1, n_total - n_test)
 
@@ -621,29 +647,27 @@ def build_loaders(
     if test_idx.size == 0:
         test_idx = train_idx[:1]
 
-    x_train = torch.from_numpy(x[train_idx])
-    y_train = torch.from_numpy(y[train_idx])
-    x_test = torch.from_numpy(x[test_idx])
-    y_test = torch.from_numpy(y[test_idx])
+    train_arrays = [torch.from_numpy(a[train_idx]) for a in arrays]
+    test_arrays = [torch.from_numpy(a[test_idx]) for a in arrays]
 
     sampler_seed = int(cfg["experiment"]["seed"])
     train_sampler: Optional[DistributedSampler] = None
     if distributed:
         train_sampler = DistributedSampler(
-            TensorDataset(x_train, y_train),
+            TensorDataset(*train_arrays),
             num_replicas=world_size,
             rank=rank,
             shuffle=True,
             seed=sampler_seed,
         )
 
-    train_loader = _make_dataloader(x_train, y_train, cfg, shuffle=True, sampler=train_sampler)
-    test_loader = _make_dataloader(x_test, y_test, cfg, shuffle=False)
+    train_loader = _make_dataloader(*train_arrays, cfg=cfg, shuffle=True, sampler=train_sampler)
+    test_loader = _make_dataloader(*test_arrays, cfg=cfg, shuffle=False)
 
     if distributed and rank != 0:
         eval_train_loader: Optional[DataLoader] = None
     else:
-        eval_train_loader = _make_dataloader(x_train, y_train, cfg, shuffle=False)
+        eval_train_loader = _make_dataloader(*train_arrays, cfg=cfg, shuffle=False)
 
     return train_loader, test_loader, train_sampler, eval_train_loader
 
@@ -652,7 +676,7 @@ def build_shot_split_loaders(
     cfg: Dict[str, Any],
     *,
     preprocess_fn: Callable[[Dict[str, Any]], Tuple[np.ndarray, np.ndarray, np.ndarray]],
-    patchify_fn: Callable[[np.ndarray, np.ndarray, Dict[str, Any]], Tuple[np.ndarray, np.ndarray]],
+    patchify_fn: Callable[[np.ndarray, np.ndarray, Dict[str, Any]], Tuple[np.ndarray, ...]],
     rank: int = 0,
     world_size: int = 1,
     distributed: bool = False,
@@ -669,7 +693,9 @@ def build_shot_split_loaders(
     ----------
     cfg                  : experiment config dict.
     preprocess_fn        : callable ``cfg -> (input_shots, target_shots, per_shot_ffid)``.
-    patchify_fn          : callable ``(input_shots, target_shots, cfg) -> (input_patches, target_patches)``.
+    patchify_fn          : callable ``(input_shots, target_shots, cfg) -> (input_patches, target_patches, ...)``.
+                           May return an optional third tensor (e.g. mask) included
+                           in the batch tuple.
     rank, world_size, distributed : DDP controls.
     test_set_dir         : if provided, unpatchified test shots are saved here
                            as ``input_shots.npy``, ``target_shots.npy``, ``ffid.npy``.
@@ -702,9 +728,15 @@ def build_shot_split_loaders(
     val_mask = np.isin(per_shot_ffid, val_ffids)
     test_mask = np.isin(per_shot_ffid, test_ffids)
 
-    train_x, train_y = patchify_fn(input_shots[train_mask], target_shots[train_mask], cfg)
-    val_x, val_y = patchify_fn(input_shots[val_mask], target_shots[val_mask], cfg)
-    test_x, test_y = patchify_fn(input_shots[test_mask], target_shots[test_mask], cfg)
+    def _patchify_subset(shots_mask: np.ndarray) -> List[torch.Tensor]:
+        result = patchify_fn(input_shots[shots_mask], target_shots[shots_mask], cfg)
+        if not isinstance(result, (tuple, list)):
+            result = (result,)
+        return [torch.from_numpy(np.asarray(a)) for a in result]
+
+    train_arrays = _patchify_subset(train_mask)
+    val_arrays = _patchify_subset(val_mask)
+    test_arrays = _patchify_subset(test_mask)
 
     if test_set_dir is not None:
         out_dir = Path(test_set_dir)
@@ -713,41 +745,36 @@ def build_shot_split_loaders(
         np.save(out_dir / "target_shots.npy", target_shots[test_mask])
         np.save(out_dir / "ffid.npy", per_shot_ffid[test_mask])
 
-    x_train = torch.from_numpy(train_x)
-    y_train = torch.from_numpy(train_y)
-    x_val = torch.from_numpy(val_x)
-    y_val = torch.from_numpy(val_y)
-
     sampler_seed = int(cfg["experiment"]["seed"])
     train_sampler: Optional[DistributedSampler] = None
     if distributed:
         train_sampler = DistributedSampler(
-            TensorDataset(x_train, y_train),
+            TensorDataset(*train_arrays),
             num_replicas=world_size,
             rank=rank,
             shuffle=True,
             seed=sampler_seed,
         )
 
-    train_loader = _make_dataloader(x_train, y_train, cfg, shuffle=True, sampler=train_sampler)
+    train_loader = _make_dataloader(*train_arrays, cfg=cfg, shuffle=True, sampler=train_sampler)
 
     # Validation loader: each rank evaluates a distinct subset to avoid
     # redundant computation; metrics are aggregated in evaluate().
     val_sampler: Optional[DistributedSampler] = None
     if distributed:
         val_sampler = DistributedSampler(
-            TensorDataset(x_val, y_val),
+            TensorDataset(*val_arrays),
             num_replicas=world_size,
             rank=rank,
             shuffle=False,
             seed=sampler_seed,
         )
-    val_loader = _make_dataloader(x_val, y_val, cfg, shuffle=False, sampler=val_sampler)
+    val_loader = _make_dataloader(*val_arrays, cfg=cfg, shuffle=False, sampler=val_sampler)
 
     if distributed and rank != 0:
         eval_train_loader: Optional[DataLoader] = None
     else:
-        eval_train_loader = _make_dataloader(x_train, y_train, cfg, shuffle=False)
+        eval_train_loader = _make_dataloader(*train_arrays, cfg=cfg, shuffle=False)
 
     return train_loader, val_loader, train_sampler, eval_train_loader
 

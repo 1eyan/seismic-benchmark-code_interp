@@ -129,7 +129,7 @@ def _preprocess_shots(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.n
 
 def _patchify_pairs(
     input_shots: np.ndarray, target_shots: np.ndarray, cfg: Dict[str, Any]
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, ...]:
     """Patchify given shot subsets with optional mask-channel concatenation.
 
     For continuous missing, apply trace masking after patchification.
@@ -140,6 +140,9 @@ def _patchify_pairs(
     When ``include_mask_channel`` is ``True``, a binary mask channel
     (1 = missing, 0 = observed) is concatenated to the input patches,
     producing ``C=2`` inputs.
+
+    When ``preprocess.return_mask`` is ``True``, also returns a per-trace
+    observation mask as a third tensor for mask-aware losses.
     """
     prep = cfg["preprocess"]
     patch_t = int(prep.get("patch_time", 256))
@@ -207,10 +210,27 @@ def _patchify_pairs(
         mask_channel = (input_patches[:, :1, :, :] == 0).astype(np.float32)
         input_patches = np.concatenate([input_patches, mask_channel], axis=1)
 
+    return_mask = bool(prep.get("return_mask", False))
+    if return_mask:
+        obs_mask = (
+            np.abs(input_patches).max(axis=2, keepdims=True) > 1e-8
+        ).astype(np.float32)
+        # If include_mask_channel is on, only use the data channel for mask
+        if bool(prep.get("include_mask_channel", False)):
+            data_ch = input_patches[:, :1, :, :]
+            obs_mask = (
+                np.abs(data_ch).max(axis=2, keepdims=True) > 1e-8
+            ).astype(np.float32)
+        return (
+            input_patches.astype(np.float32),
+            target_patches.astype(np.float32),
+            obs_mask.astype(np.float32),
+        )
+
     return input_patches.astype(np.float32), target_patches.astype(np.float32)
 
 
-def _build_patch_pairs(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
+def _build_patch_pairs(cfg: Dict[str, Any]) -> Tuple[np.ndarray, ...]:
     """Backward-compatible full pipeline."""
     inp, tgt, _ = _preprocess_shots(cfg)
     return _patchify_pairs(inp, tgt, cfg)

@@ -1,0 +1,145 @@
+# ---------------------------------------------------------------------------
+# Yuan et al. 2022 — BTN-SS: Self-supervised + F-K Spectrum Suppression
+#
+# Paper: "Self-Supervised Learning for Efficient Antialiasing Seismic Data
+#         Interpolation." IEEE TGRS, vol. 60, art. 5913819, 2022.
+# DOI:  10.1109/TGRS.2022.3167546
+#
+# BTN-SS extends BTN-Random with Automatic Spectrum Suppression:
+# an F-K domain regularisation term that penalises energy outside the
+# physically plausible signal cone.  This mitigates the aliasing artefacts
+# that arise from regularly missing input traces.
+#
+# Loss = NormalizedObservedL1 + λ * FKSpectrumSuppression
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: interp_yuan2022_btn_spectrum
+  output_dir: results
+  seed: 42
+  device: cuda
+
+data:
+  segy:
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
+    traces_per_shot: 201
+    time_downsample: 1
+  test_ratio: 0.1
+  loader:
+    batch_size: 32
+    num_workers: 4
+    pin_memory: true
+
+preprocess:
+  mask_mode: continuous
+  mask_ratio: 0.5
+  dt: 0.002
+  t0: 0.0
+  spherical_power: 1.2
+  uniform_stride: 2
+  normalize_mode: max_abs
+  normalize_scope: global
+  patch_time: 256
+  patch_trace: 128
+  patch_overlap: 0.5
+  return_mask: true
+  max_shots: null
+
+model:
+  type: yuan2022_btn
+  params:
+    in_channels: 1
+    out_channels: 1
+    base_channels: 32
+    num_levels: 4
+    kernel_size: 3
+    encoder_norm: none
+    decoder_norm: batch
+    activation: relu
+    upsample_mode: nearest
+    share_branch_weights: true
+    conv_bias: true
+    negative_slope: 0.01
+    num_groups: 8
+
+loss:
+  type: weighted_composite
+  params:
+    terms:
+      - type: normalized_observed_l1
+        params:
+          eps: 1.0e-6
+      - type: fk_spectrum_suppression
+        params:
+          dt: 0.002
+          dx: 1.0
+          v_min: 1500.0
+          taper_width: 4
+    weights: [1.0, 0.1]
+
+metrics:
+  - name: snr
+    params: { reduction: per_sample }
+  - name: psnr
+    params: { data_range: 1.0, reduction: per_sample }
+  - name: ssim
+    params: { data_range: 2.0, window_size: 11, sigma: 1.5 }
+  - name: mse
+    params: {}
+  - name: mae
+    params: {}
+
+optim:
+  type: adam
+  params:
+    lr: 1.0e-4
+
+scheduler:
+  type: cosine
+  params:
+    min_lr: 1.0e-6
+
+train:
+  epochs: 100
+  grad_clip: null
+  log_step: false
+  log_interval: 20
+  eval_interval: 1
+  ckpt_interval: 5
+  vis_interval: 5
+  resume: null
+
+log:
+  log_dir: logs
+  plot_interval: 5
+
+inference:
+  data:
+    segy:
+      path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots10-18.sgy
+      traces_per_shot: 201
+      time_downsample: 1
+  checkpoint: results/interp_yuan2022_btn_spectrum/checkpoints/best.pt
+  output_dir: results/interp_yuan2022_btn_spectrum/inference
+  n_viz_shots: 5
+  device: 1
+  batch_size: 4
+
+# ---------------------------------------------------------------------------
+# Paper alignment audit
+# ---------------------------------------------------------------------------
+paper_alignment:
+  architecture:
+    blind_trace:       { classification: paper-explicit,    value: true,                evidence: "Core BTN mechanism" }
+    two_branches:      { classification: paper-explicit,    value: true,                evidence: "Network architecture diagram" }
+    base_channels:     { classification: paper-inferred,    value: 32,                  evidence: "Author follow-up monograph" }
+  training:
+    loss_data:         { classification: paper-inferred,    value: normalized_observed_l1, evidence: "Self-supervised L1 on observed positions" }
+    loss_spectrum:     { classification: paper-explicit,    value: fk_spectrum_suppression, evidence: "'Automatic Spectrum Suppression' in paper text" }
+    spectrum_weight:   { classification: reproduction-assumption, value: 0.1,           evidence: "Balance hyperparameter; not verified from paper" }
+    optimizer:         { classification: reproduction-assumption, value: adam,          evidence: "Not verified from paper" }
+    lr:                { classification: reproduction-assumption, value: 1.0e-4,        evidence: "Not verified from paper" }
+    mask_mode:         { classification: paper-explicit,    value: continuous,          evidence: "BTN-SS targets aliasing from regular (continuous) missing traces" }
+    self_supervised:   { classification: paper-explicit,    value: true,                evidence: "Paper title" }
+    fk_v_min:          { classification: reproduction-assumption, value: 1500.0,        evidence: "Minimum apparent velocity; dataset-dependent" }
+    fk_dx:             { classification: reproduction-assumption, value: 1.0,           evidence: "Trace spacing; dataset-dependent" }

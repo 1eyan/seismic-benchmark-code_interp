@@ -21,7 +21,7 @@ experiment:
 
 data:
   segy:
-    path: /cloud/cloud-s3fs/SEGC3/SEG_45Shot_shots1-9.sgy
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
     traces_per_shot: 201
     time_downsample: 1
   test_ratio: 0.1
@@ -111,7 +111,7 @@ log:
 inference:
   data:
     segy:
-      path: /cloud/cloud-s3fs/SEGC3/SEG_45Shot_shots10-18.sgy
+      path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots10-18.sgy
       traces_per_shot: 201
       time_downsample: 1
   checkpoint: results/interp_guo2023_mst_conservative/checkpoints/epoch_0059.pt

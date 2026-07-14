@@ -699,3 +699,50 @@
   - Added detailed comments for the `inference.binned_metrics` block: master switch, EB-WSE bins/smooth_sigma, and FB-FRE `rel_threshold`, `band_ratios`, `band_names`, `taper_width`.
 - Impact: Users can now understand and tune the configs without reading the source code.
 - Follow-up: Keep comments updated when defaults or config schema change.
+
+## 2026-07-14 - Paper-aligned loss functions & training hyperparameters for 5 interpolation models
+
+- Context: All 5 reproduction models (Chai2020, Wang2019, Yoon2021, Yuan2022 BTN,
+  Guo2023 MST) were using identical training hyperparameters (AdamW, lr=1e-3,
+  cosine scheduler, epochs=200, batch=192, MSE loss). Each model needs its
+  paper-specific training configuration.
+- Change:
+  - **New losses in `utils/losses.py`**: `NormalizedObservedL1Loss` (BTN self-supervised),
+    `MaskedL1Loss`, `MaskedMSELoss`, `WeightedCompositeLoss` (multi-term combiner).
+  - **New file `utils/spectrum_loss.py`**: `FKSpectrumSuppressionLoss` for BTN-SS
+    variant. Registered as `fk_spectrum_suppression`. Imported in `utils/__init__.py`.
+  - **Extended `utils/train_utils.py`**: `train_one_epoch` and `evaluate` accept
+    3-tuple batches `(x, y, mask)` and pass mask as `extras["mask"]` to loss.
+    `build_loaders` and `build_shot_split_loaders` generalize to variable-length
+    tensor returns from patch/pair functions.
+  - **Modified `scripts/interpolation/train_interpolation_unet.py`** and
+    **`scripts/interpolation/train_interpolation_patch_transformer.py`**:
+    `_patchify_pairs` supports `return_mask: true` to output per-trace
+    observation mask (1=observed, 0=missing) as third tensor.
+  - **7 new paper configs**:
+    - `configs/interpolation/chai2020_unet_paper.yaml` (Adam, 1e-4, 112×112, 50ep)
+    - `configs/interpolation/wang2019_resnet_paper.yaml` (Adam, step decay)
+    - `configs/interpolation/yoon2021_dbilstm_paper.yaml` (Adam, step decay)
+    - `configs/interpolation/yuan2022_btn_random.yaml` (NormalizedObservedL1, random mask)
+    - `configs/interpolation/yuan2022_btn_spectrum.yaml` (WeightedComposite: L1 + FK suppression)
+    - `configs/interpolation/yuan2022_btn_mix.yaml` (NormalizedObservedL1, simplified mix)
+    - `configs/interpolation/guo2023_mst_paper.yaml` (AdamW, 1e-4, 96×96, 80ep)
+    Each includes a `paper_alignment` block classifying every parameter.
+  - **Tests**: `tests/test_paper_aligned_losses.py` (loss formula verification),
+    `tests/test_paper_training_configs.py` (config loading, regression, BTN pipeline).
+  - **Docs**: `docs/paper_loss_hyperparameter_audit.md` with summary alignment table.
+- Impact:
+  - Each model now uses distinct paper-aligned training recipes instead of shared defaults.
+  - BTN now trains in self-supervised mode (loss on observed positions only), matching
+    the paper's core contribution.
+  - Backward-compatible: all existing configs and training scripts continue to work
+    unchanged.
+  - No model architectures modified. No trainer rewritten.
+- Follow-up:
+  - Verify BTN training hyperparameters against actual paper PDF (LR, batch size, epochs).
+  - Implement full mix-training data sampler for BTN-Mix (cycles through multiple
+    decimation patterns during training).
+  - Implement horizontal flip and spatial downsampling augmentation for Guo2023 MST.
+  - Verify Chai2020 and Wang2019 training details against full paper PDFs.
+  - Unresolved: Guo2023 MST paper is behind IEEE paywall; all training params are
+    reproduction-assumptions.

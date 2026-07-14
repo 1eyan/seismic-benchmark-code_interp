@@ -213,6 +213,145 @@ class MaskedBCEWithLogitsLoss(BaseLoss):
         )
 
 
+# ----------------------------------------------------------------------
+# Self-supervised / mask-aware regression losses
+# ----------------------------------------------------------------------
+
+
+@register_loss("normalized_observed_l1")
+class NormalizedObservedL1Loss(BaseLoss):
+    """L1 loss normalised by the count of observed (non-masked) positions.
+
+    For BTN self-supervised training: the model sees a masked input and
+    predicts all traces; loss is evaluated only on *observed* positions
+    to enforce the blind-trace constraint.  ``extras["mask"]`` must be a
+    float tensor of the same shape as ``pred`` with 1 = observed, 0 = missing.
+    """
+
+    def __init__(self, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.eps = float(eps)
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: Optional[torch.Tensor] = None,
+        **extras: Any,
+    ) -> torch.Tensor:
+        if target is None:
+            raise ValueError("NormalizedObservedL1Loss requires `target`.")
+        mask = extras.get("mask")
+        if mask is None:
+            return nn.functional.l1_loss(pred, target, reduction="mean")
+        if not isinstance(mask, torch.Tensor):
+            mask = torch.as_tensor(mask, device=pred.device, dtype=pred.dtype)
+        if mask.shape != pred.shape:
+            mask = mask.reshape(pred.shape)
+        mask = mask.to(device=pred.device, dtype=pred.dtype)
+        abs_err = (pred - target).abs() * mask
+        count = mask.sum().clamp_min(self.eps)
+        return abs_err.sum() / count
+
+
+@register_loss("masked_l1")
+class MaskedL1Loss(BaseLoss):
+    """L1 loss computed only on positions where ``extras["mask"] == 1``."""
+
+    def __init__(self, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.eps = float(eps)
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: Optional[torch.Tensor] = None,
+        **extras: Any,
+    ) -> torch.Tensor:
+        if target is None:
+            raise ValueError("MaskedL1Loss requires `target`.")
+        mask = extras.get("mask")
+        if mask is None:
+            return nn.functional.l1_loss(pred, target, reduction="mean")
+        if not isinstance(mask, torch.Tensor):
+            mask = torch.as_tensor(mask, device=pred.device, dtype=pred.dtype)
+        if mask.shape != pred.shape:
+            mask = mask.reshape(pred.shape)
+        mask = mask.to(device=pred.device, dtype=pred.dtype)
+        abs_err = (pred - target).abs() * mask
+        count = mask.sum().clamp_min(self.eps)
+        return abs_err.sum() / count
+
+
+@register_loss("masked_mse")
+class MaskedMSELoss(BaseLoss):
+    """MSE loss computed only on positions where ``extras["mask"] == 1``."""
+
+    def __init__(self, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.eps = float(eps)
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: Optional[torch.Tensor] = None,
+        **extras: Any,
+    ) -> torch.Tensor:
+        if target is None:
+            raise ValueError("MaskedMSELoss requires `target`.")
+        mask = extras.get("mask")
+        if mask is None:
+            return nn.functional.mse_loss(pred, target, reduction="mean")
+        if not isinstance(mask, torch.Tensor):
+            mask = torch.as_tensor(mask, device=pred.device, dtype=pred.dtype)
+        if mask.shape != pred.shape:
+            mask = mask.reshape(pred.shape)
+        mask = mask.to(device=pred.device, dtype=pred.dtype)
+        sq_err = (pred - target).pow(2) * mask
+        count = mask.sum().clamp_min(self.eps)
+        return sq_err.sum() / count
+
+
+@register_loss("weighted_composite")
+class WeightedCompositeLoss(BaseLoss):
+    """Weighted sum of sub-losses, each specified as a ``{type, params}`` block.
+
+    Parameters
+    ----------
+    terms : list[dict]
+        List of loss config blocks, e.g. ``[{"type": "mse", "params": {...}}]``.
+    weights : list[float], optional
+        Per-term weight multipliers. Defaults to 1.0 for each term.
+    """
+
+    def __init__(
+        self,
+        terms: list,
+        weights: Optional[list] = None,
+    ) -> None:
+        super().__init__()
+        if not terms:
+            raise ValueError("WeightedCompositeLoss requires at least one term.")
+        self.terms = nn.ModuleList([build_loss(t) for t in terms])
+        if weights is None:
+            weights = [1.0] * len(terms)
+        if len(weights) != len(terms):
+            raise ValueError(
+                f"weights length ({len(weights)}) must match terms length ({len(terms)})."
+            )
+        self.weights = [float(w) for w in weights]
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: Optional[torch.Tensor] = None,
+        **extras: Any,
+    ) -> torch.Tensor:
+        total = pred.new_tensor(0.0)
+        for w, term in zip(self.weights, self.terms):
+            total = total + w * term(pred, target, **extras)
+        return total
+
+
 def build_loss(cfg: Dict[str, Any]) -> BaseLoss:
     """Instantiate a loss from a ``{type, params}`` config block."""
     name = cfg["type"]

@@ -17,6 +17,7 @@ from .datasets import (
 )
 from .logger import StepLossLogger, TrainingLogger
 from .losses import LOSS_REGISTRY, BaseLoss, build_loss, register_loss
+from .spectrum_loss import FKSpectrumSuppressionLoss  # noqa: F401 — registers fk_spectrum_suppression
 from .eb_wse_metrics import energy_binned_weak_signal_metrics
 from .fb_fre_metrics import (
     build_auto_bands,

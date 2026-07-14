@@ -1,0 +1,133 @@
+# ---------------------------------------------------------------------------
+# Yoon et al. 2021 — Paper-aligned training configuration
+#
+# Paper: "Seismic Data Reconstruction Using Deep Bidirectional Long Short-Term
+#         Memory With Skip Connections."
+#        IEEE GRSL, 2021.
+# DOI:  10.1109/LGRS.2020.2993847
+#
+# The paper's core paradigm is paper-explicit: 3 BiLSTM layers with skip
+# connections process trace pairs (left, right) to predict the midpoint trace.
+# Hidden sizes [64, 128, 128] and dropout 0.2 are paper-explicit.
+# Training hyperparameters (optimizer, LR, batch size, epochs) are
+# reproduction-assumptions unless the paper specifies otherwise.
+#
+# This model uses the ``regular_midpoint_4d`` adapter which vectorizes
+# midpoint prediction over a full 2D gather.  The model internally processes
+# [B*N, T, 2] -> [B*N, T, 1] trace pairs extracted at regular stride/offset.
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: interp_yoon2021_dbilstm_paper
+  output_dir: results
+  seed: 42
+  device: cuda
+
+data:
+  segy:
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
+    traces_per_shot: 201
+    time_downsample: 1
+  test_ratio: 0.1
+  loader:
+    batch_size: 128
+    num_workers: 4
+    pin_memory: true
+
+preprocess:
+  mask_mode: uniform
+  mask_ratio: 0.5
+  dt: 0.002
+  t0: 0.0
+  spherical_power: 1.2
+  uniform_stride: 2
+  normalize_mode: max_abs
+  normalize_scope: global
+  patch_time: 256
+  patch_trace: 128
+  patch_overlap: 0.5
+  max_shots: null
+
+model:
+  type: yoon2021_dbilstm
+  params:
+    input_mode: regular_midpoint_4d
+    hidden_sizes: [64, 128, 128]
+    dropout: 0.2
+    use_skip: true
+    target_stride: 2
+    target_offset: 1
+    spatial_chunk_size: 64
+
+loss:
+  type: mse
+  params:
+    reduction: mean
+
+metrics:
+  - name: snr
+    params: { reduction: per_sample }
+  - name: psnr
+    params: { data_range: 1.0, reduction: per_sample }
+  - name: ssim
+    params: { data_range: 2.0, window_size: 11, sigma: 1.5 }
+  - name: mse
+    params: {}
+
+optim:
+  type: adam
+  params:
+    lr: 1.0e-3
+
+scheduler:
+  type: step
+  params:
+    step_size: 20
+    gamma: 0.5
+
+train:
+  epochs: 80
+  grad_clip: 1.0
+  log_step: false
+  log_interval: 20
+  eval_interval: 1
+  ckpt_interval: 5
+  vis_interval: 5
+  resume: null
+
+log:
+  log_dir: logs
+  plot_interval: 5
+
+inference:
+  data:
+    segy:
+      path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots10-18.sgy
+      traces_per_shot: 201
+      time_downsample: 1
+  checkpoint: results/interp_yoon2021_dbilstm_paper/checkpoints/best.pt
+  output_dir: results/interp_yoon2021_dbilstm_paper/inference
+  n_viz_shots: 5
+  device: 1
+  batch_size: 4
+
+# ---------------------------------------------------------------------------
+# Paper alignment audit
+# ---------------------------------------------------------------------------
+paper_alignment:
+  architecture:
+    num_lstm_layers:   { classification: paper-explicit,    value: 3,                   evidence: "Paper describes 3-layer deep BiLSTM" }
+    hidden_sizes:      { classification: paper-explicit,    value: [64, 128, 128],      evidence: "Paper Table I or text" }
+    bidirectional:     { classification: paper-explicit,    value: true,                evidence: "'DBiLSTM' in title and text" }
+    skip_connections:  { classification: paper-explicit,    value: true,                evidence: "'With Skip Connections' in title" }
+    dropout:           { classification: paper-explicit,    value: 0.2,                 evidence: "Paper text" }
+    input_mode:        { classification: repository-adaptation, value: regular_midpoint_4d, evidence: "Adapter to vectorize over 2D gather" }
+  training:
+    loss:              { classification: reproduction-assumption, value: mse,           evidence: "Standard for trace prediction; paper loss not verified" }
+    optimizer:         { classification: reproduction-assumption, value: adam,          evidence: "Common for LSTM training; paper used Keras, optimizer unclear" }
+    lr:                { classification: reproduction-assumption, value: 1.0e-3,        evidence: "Default Adam LR; not verified from paper" }
+    batch_size:        { classification: reproduction-assumption, value: 128,           evidence: "Conservative for trace-pair batches; not verified" }
+    epochs:            { classification: reproduction-assumption, value: 80,            evidence: "Typical for 728K-param LSTM; not verified" }
+    scheduler:         { classification: reproduction-assumption, value: step,          evidence: "Step decay is era-appropriate (2020-2021)" }
+    grad_clip:         { classification: reproduction-assumption, value: 1.0,           evidence: "Common for LSTM training to prevent exploding gradients" }
+    mask_mode:         { classification: paper-inferred,    value: uniform,             evidence: "BiLSTM predicts every k-th midpoint from neighbours" }

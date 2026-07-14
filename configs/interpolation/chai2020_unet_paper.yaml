@@ -1,0 +1,136 @@
+# ---------------------------------------------------------------------------
+# Chai et al. 2020 — Paper-aligned training configuration
+#
+# Paper: "Deep Learning for Regularly Missing Data Reconstruction"
+#        IEEE TGRS, vol. 58, no. 6, pp. 4409-4423, 2020.
+# DOI:  10.1109/TGRS.2019.2961015
+#
+# Architecture is paper-explicit (50-layer U-Net, 5×5 kernels, channels
+# [64,128,256,512,1024], ReLU, no BN, no dropout).
+# Training hyperparameters are predominantly paper-inferred — the paper's
+# primary contribution is the architecture study, and training details are
+# sparse.  Parameters below represent best-effort alignment based on
+# available excerpts and standard practice for this model class.
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: interp_chai2020_unet_paper
+  output_dir: results
+  seed: 42
+  device: cuda
+
+data:
+  segy:
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
+    traces_per_shot: 201
+    time_downsample: 1
+  test_ratio: 0.1
+  loader:
+    batch_size: 128
+    num_workers: 4
+    pin_memory: true
+
+preprocess:
+  mask_mode: continuous
+  mask_ratio: 0.5
+  dt: 0.002
+  t0: 0.0
+  spherical_power: 1.2
+  uniform_stride: 2
+  normalize_mode: max_abs
+  normalize_scope: global
+  patch_time: 112
+  patch_trace: 112
+  patch_overlap: 0.5
+  max_shots: null
+
+model:
+  type: chai2020_unet
+  params:
+    in_channels: 1
+    out_channels: 1
+    base_channels: 64
+    num_levels: 4
+    kernel_size: 5
+    norm: none
+    activation: relu
+    upsample: nearest
+    dropout: 0.0
+    residual_learning: false
+    conv_bias: true
+
+loss:
+  type: mse
+  params:
+    reduction: mean
+
+metrics:
+  - name: snr
+    params: { reduction: per_sample }
+  - name: psnr
+    params: { data_range: 1.0, reduction: per_sample }
+  - name: ssim
+    params: { data_range: 2.0, window_size: 11, sigma: 1.5 }
+  - name: mse
+    params: {}
+
+optim:
+  type: adam
+  params:
+    lr: 1.0e-4
+
+scheduler:
+  type: cosine
+  params:
+    min_lr: 1.0e-6
+
+train:
+  epochs: 50
+  grad_clip: null
+  log_step: false
+  log_interval: 20
+  eval_interval: 1
+  ckpt_interval: 5
+  vis_interval: 5
+  resume: null
+
+log:
+  log_dir: logs
+  plot_interval: 5
+
+inference:
+  data:
+    segy:
+      path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots10-18.sgy
+      traces_per_shot: 201
+      time_downsample: 1
+  checkpoint: results/interp_chai2020_unet_paper/checkpoints/best.pt
+  output_dir: results/interp_chai2020_unet_paper/inference
+  n_viz_shots: 5
+  device: 1
+  batch_size: 4
+
+# ---------------------------------------------------------------------------
+# Paper alignment audit
+# ---------------------------------------------------------------------------
+paper_alignment:
+  architecture:
+    num_levels:        { classification: paper-explicit,    value: 4,                  evidence: "Paper layer statistics include 4 encoder/decoder levels" }
+    base_channels:     { classification: paper-explicit,    value: 64,                 evidence: "Paper: F1=64, F2=128, F3=256, F4=512, F5=1024" }
+    kernel_size:       { classification: paper-explicit,    value: 5,                  evidence: "Paper: Kh=Kw=5 for all hidden convolutions" }
+    activation:        { classification: paper-explicit,    value: relu,               evidence: "Paper layer statistics include 18 ReLU layers" }
+    norm:              { classification: paper-inferred,    value: none,               evidence: "50-layer count leaves no room for 18 BN layers; no BN in statistics" }
+    dropout:           { classification: paper-inferred,    value: 0.0,                evidence: "No dropout in layer statistics" }
+    upsample:          { classification: reproduction-assumption, value: nearest,      evidence: "Paper uses Keras UpSampling2D; exact interpolation method unclear" }
+    conv_bias:         { classification: paper-inferred,    value: true,               evidence: "No norm to provide affine shift; same-author docs include bias" }
+  training:
+    loss:              { classification: paper-inferred,    value: mse,                evidence: "L2 reconstruction is standard for this task; paper may specify in Section III" }
+    optimizer:         { classification: paper-inferred,    value: adam,               evidence: "Common choice for 2019-2020 deep learning; paper IV.A may confirm" }
+    lr:                { classification: paper-inferred,    value: 1.0e-4,             evidence: "Typical for U-Net seismic models of this era; not verified from paper" }
+    batch_size:        { classification: paper-inferred,    value: 128,                evidence: "Common batch size for 112×112 patches; not verified from paper" }
+    epochs:            { classification: paper-inferred,    value: 50,                 evidence: "Typical convergence for 87M-param U-Net; not verified from paper" }
+    patch_size:        { classification: paper-inferred,    value: [112, 112],         evidence: "Paper may use 112×112 (divisible by 16); not verified" }
+    mask_mode:         { classification: paper-explicit,    value: continuous,         evidence: "Paper title: 'Regularly Missing Data Reconstruction'" }
+    mask_ratio:        { classification: reproduction-assumption, value: 0.5,          evidence: "Paper studies multiple ratios; 0.5 is a common baseline" }
+    scheduler:         { classification: reproduction-assumption, value: cosine,       evidence: "Paper does not mention LR schedule; cosine annealing is modern default" }
+    grad_clip:         { classification: paper-inferred,    value: null,               evidence: "Paper does not mention gradient clipping" }

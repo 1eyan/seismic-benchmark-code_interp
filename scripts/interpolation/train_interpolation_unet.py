@@ -133,13 +133,18 @@ def _preprocess_shots(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.n
 
 def _patchify_pairs(
     input_shots: np.ndarray, target_shots: np.ndarray, cfg: Dict[str, Any]
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, ...]:
     """Patchify given shot subsets.
 
     For continuous missing, apply trace masking after patchification.
     For random/uniform missing, keep the original shot-level masking logic.
     Optional patch-level normalization is applied after the final input-target
     patch pairs are constructed.
+
+    When ``preprocess.return_mask`` is ``True``, also returns a per-trace
+    observation mask as a third tensor (1 = observed, 0 = missing) so that
+    mask-aware losses (e.g. ``normalized_observed_l1``) can restrict the
+    loss to observed positions only.
     """
     prep = cfg["preprocess"]
     patch_t = int(prep.get("patch_time", 256))
@@ -178,7 +183,7 @@ def _patchify_pairs(
             n_missing = None
 
         patches_3d = target_patches[:, 0, :, :]
-        masked_3d, _ = mask_traces(
+        masked_3d, trace_mask_3d = mask_traces(
             patches_3d,
             mode="continuous",
             ratio=mask_ratio,
@@ -200,9 +205,25 @@ def _patchify_pairs(
         input_patches = input_patches / scale
         target_patches = target_patches / scale
 
+    return_mask = bool(prep.get("return_mask", False))
+    if return_mask:
+        # Per-trace observation mask derived from input patches:
+        # after max_abs normalisation + masking, missing traces are
+        # entirely zero.  A trace is "observed" iff its max |amplitude|
+        # exceeds epsilon.
+        obs_mask = (
+            np.abs(input_patches).max(axis=2, keepdims=True) > 1e-8
+        ).astype(np.float32)  # (P, 1, 1, W) — broadcasts over time dim
+
+        return (
+            input_patches.astype(np.float32),
+            target_patches.astype(np.float32),
+            obs_mask.astype(np.float32),
+        )
+
     return input_patches.astype(np.float32), target_patches.astype(np.float32)
 
-def _build_patch_pairs(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
+def _build_patch_pairs(cfg: Dict[str, Any]) -> Tuple[np.ndarray, ...]:
     """Backward-compatible full pipeline."""
     inp, tgt, _ = _preprocess_shots(cfg)
     return _patchify_pairs(inp, tgt, cfg)
