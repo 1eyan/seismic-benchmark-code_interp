@@ -14,10 +14,10 @@
 # ---------------------------------------------------------------------------
 
 experiment:
-  name: interp_guo2023_mst_conservative
+  name: interp_guo2023_mst_paper
   output_dir: results
   seed: 42
-  device: cuda
+  device: cuda:1
 
 data:
   segy:
@@ -26,7 +26,7 @@ data:
     time_downsample: 1
   test_ratio: 0.1
   loader:
-    batch_size: 192
+    batch_size: 1
     num_workers: 4
     pin_memory: true
 
@@ -42,7 +42,7 @@ preprocess:
   patch_normalize: true
   patch_norm_eps: 1.0e-6
   patch_time: 256
-  patch_trace: 128
+  patch_trace: 64
   patch_overlap: 0.5
   max_shots: null
 
@@ -114,8 +114,8 @@ inference:
       path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots10-18.sgy
       traces_per_shot: 201
       time_downsample: 1
-  checkpoint: results/interp_guo2023_mst_conservative/checkpoints/epoch_0059.pt
-  output_dir: results/interp_guo2023_mst_conservative/inference
+  checkpoint: results/interp_guo2023_mst_paper/checkpoints/epoch_0200.pt
+  output_dir: results/interp_guo2023_mst_paper/inference
   n_viz_shots: 5
   device: 1
   batch_size: 4

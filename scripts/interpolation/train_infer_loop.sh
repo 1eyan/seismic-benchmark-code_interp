@@ -42,12 +42,12 @@ set -euo pipefail
 # User configuration
 # ==============================================================================
 
-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 MASTER_PORT="${MASTER_PORT:-auto}"
 TORCHRUN_EXTRA="${TORCHRUN_EXTRA:-}"
 
-BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/interpolation_unet.yaml}"
+BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/guo2023_mst.yaml}"
 TRAIN_PY="${TRAIN_PY:-scripts/interpolation/train_interpolation_unet.py}"
 INFER_PY="${INFER_PY:-scripts/interpolation/inference_interpolation.py}"
 
@@ -59,8 +59,9 @@ INFER_PY="${INFER_PY:-scripts/interpolation/inference_interpolation.py}"
 # Fixed trace count is only meaningful for continuous missing traces.
 EXPERIMENTS=(
   "random:0.3"
+  "random:0.5"
+  "uniform:0.3"
   "uniform:0.5"
-  "continuous:0.3"
   "continuous:20tr"
   "continuous:30tr"
   "continuous:40tr"

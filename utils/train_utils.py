@@ -192,6 +192,11 @@ def init_distributed(backend: Optional[str] = None) -> Tuple[bool, int, int, int
     if backend is None:
         backend = "nccl" if torch.cuda.is_available() else "gloo"
     if torch.cuda.is_available():
+        if local_rank >= torch.cuda.device_count():
+            raise RuntimeError(
+                f"LOCAL_RANK={local_rank} >= torch.cuda.device_count()={torch.cuda.device_count()}. "
+                f"Check CUDA_VISIBLE_DEVICES and the number of GPUs available."
+            )
         torch.cuda.set_device(local_rank)
         device = torch.device("cuda", local_rank)
         torch.distributed.init_process_group(

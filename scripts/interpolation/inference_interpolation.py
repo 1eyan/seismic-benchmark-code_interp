@@ -286,7 +286,7 @@ def main() -> None:
         patch_norm_eps=float(prep.get("patch_norm_eps", 1e-6)),
         include_mask_channel=bool(prep.get("include_mask_channel", False)),
     )
-    mask_3d = trace_mask[..., None]
+    mask_3d = np.broadcast_to(trace_mask[..., None], pred_norm.shape).copy()
     infer_elapsed = time.time() - infer_start
     print(f"Inference time: {infer_elapsed:.2f}s")
 
