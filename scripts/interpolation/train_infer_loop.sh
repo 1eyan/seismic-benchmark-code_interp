@@ -47,7 +47,8 @@ NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 MASTER_PORT="${MASTER_PORT:-auto}"
 TORCHRUN_EXTRA="${TORCHRUN_EXTRA:-}"
 
-BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/guo2023_mst.yaml}"
+BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/chai2020_unet_paper.yaml}"
+#BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/guo2023_mst_paper.yaml}"
 TRAIN_PY="${TRAIN_PY:-scripts/interpolation/train_interpolation_unet.py}"
 INFER_PY="${INFER_PY:-scripts/interpolation/inference_interpolation.py}"
 

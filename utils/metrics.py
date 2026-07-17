@@ -496,12 +496,16 @@ def compute_metrics(
     return {name: metric(pred, target) for name, metric in metrics.items()}
 
 
-def format_metric_value(name: str, value: float) -> str:
+def format_metric_value(name: str, value: Any) -> str:
     """Format a metric for human-readable output or file saving.
 
     - ``mse``: 6 significant digits so small values are not truncated to 0.00.
-    - All others: 2 decimal places.
+    - All scalars: 2 decimal places.
+    - Lists: each element formatted individually, joined by ``-``.
     """
+    if isinstance(value, (list, tuple)):
+        parts = [format_metric_value(name, v) for v in value]
+        return "-".join(parts)
     if name.lower() == "mse":
         return f"{value:.6g}"
     return f"{value:.2f}"
