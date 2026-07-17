@@ -746,3 +746,60 @@
   - Verify Chai2020 and Wang2019 training details against full paper PDFs.
   - Unresolved: Guo2023 MST paper is behind IEEE paywall; all training params are
     reproduction-assumptions.
+
+## 2026-07-17 - Add Yu2022 ANet reproduction (attention + SSIM/L1 hybrid loss)
+
+- Context: Reproduce Yu & Wu, "Attention and Hybrid Loss Guided Deep Learning
+  for Consecutively Missing Seismic Data Reconstruction" (IEEE TGRS, vol. 60,
+  2022, DOI 10.1109/TGRS.2021.3068279) in the interpolation benchmark. The
+  paper PDF is IEEE-paywalled and no official code was found; paper-explicit
+  settings come from the paper text, per-layer figure details are documented
+  reproduction-assumptions.
+- Change:
+  - `model/interpolation/yu2022_anet.py` (new) — `ANetResidualBlock`,
+    `ANetNonLocalAttention2D` (exact non-local attention: 1x1 Q/K/V convs,
+    full N x N softmax correlation, 1x1 output conv, residual add, optional
+    mathematically-exact query chunking), `ANetUpsampleStage` (x2 nearest or
+    transposed upsample + conv/BN/ReLU), `Yu2022ANet` (@register_model
+    "yu2022_anet": two stride-2 downsampling convs 64->128, six consecutive
+    residual blocks, one attention module, two upsampling groups, linear
+    final conv; zero-padding for arbitrary sizes).
+  - `model/interpolation/__init__.py` — added `from . import yu2022_anet`.
+  - `utils/losses.py` — `ANetSSIML1Loss` (@register_loss "anet_ssim_l1"):
+    `-SSIM + lambda_l1 * L1` with per-sample global-patch SSIM statistics
+    (paper Eq. (1)-(6), c3 = c2/2 merged form); loss equals -1 at perfect
+    reconstruction; `components()` exposes term tensors for logging/tests.
+  - `tools/preprocessing.py` — `mask_traces` gained keyword-only
+    `ratio_range=(low, high)` for `random`/`continuous` modes: per-shot
+    missing fraction drawn uniformly from the range, vectorized; legacy
+    single-ratio paths unchanged.
+  - `scripts/interpolation/train_interpolation_unet.py` — continuous-mask
+    branch supports `preprocess.mask_ratio_range` (seeded RNG from
+    `experiment.seed` for reproducible masks) and the experiment-name suffix
+    reflects the range (e.g. `_continuous_miss10-30`).
+  - Configs (new): `configs/interpolation/yu2022_anet_seg_c3_paper.yaml`
+    (128x128 patches, 10%-30% consecutive missing, minmax [0,1], Adam 1e-3,
+    batch 32, 20 epochs, no scheduler), `yu2022_anet_field_paper.yaml`
+    (720x120 patches, batch 8, attention query chunking), and
+    `yu2022_anet_mse_ablation.yaml` (identical except `loss: mse`); each
+    carries a `paper_alignment` classification block.
+  - Tests (new): `tests/test_yu2022_anet_architecture.py`, `_attention.py`,
+    `_loss.py`, `_training.py`, `_configs.py` — topology (2 stride-2 stages,
+    64 first channels, 6 blocks, 1 attention, 2 upsample stages, 16 BN, no
+    forbidden modules), attention exactness (row sums, zeroed-projection
+    identity, global dependency, chunk equivalence), loss exact values
+    (-1 at optimum, manual-computation match, lambda direction, constant
+    offset vs 1-SSIM+L1), gradients/one-batch overfit/trainer compatibility,
+    consecutive-mask ratio-range behavior, and config regression.
+  - `model/interpolation/yu2022_anet_notes.md` (new) — full reproduction
+    notes with setting classification table.
+- Impact: ANet is available as `yu2022_anet` with the paper's hybrid loss as
+  `anet_ssim_l1`. No trainer changes; other models' training behavior is
+  unaffected (`ratio_range` is opt-in and the legacy mask paths are
+  byte-identical).
+- Follow-up: Local dev machine has no PyTorch — run the five ANet test files
+  on the training server. When the paper PDF / Fig. 3 becomes available,
+  verify kernel sizes, decoder channels, upsampling API, attention channel
+  dims, SSIM scope/constants, and Adam betas, then upgrade the corresponding
+  reproduction-assumption entries. Set the Mobil AVO Viking Graben SEG-Y path
+  in the field config before running it.

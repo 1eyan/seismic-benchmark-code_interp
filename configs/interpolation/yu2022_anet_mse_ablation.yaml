@@ -1,0 +1,112 @@
+# ---------------------------------------------------------------------------
+# Yu & Wu 2022 — ANet MSE ablation (paper comparison: ANet + MSE vs ANet + SSIM+L1)
+#
+# Paper: "Attention and Hybrid Loss Guided Deep Learning for Consecutively
+#         Missing Seismic Data Reconstruction"
+#        IEEE TGRS, vol. 60, pp. 1-8, 2022.
+# DOI:  10.1109/TGRS.2021.3068279
+#
+# Identical to yu2022_anet_seg_c3_paper.yaml except the loss is plain MSE.
+# Network, data, mask, optimizer, LR, batch size, and epochs are unchanged so
+# that the loss ablation is the only variable (paper Section on hybrid loss).
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: interp_yu2022_anet_mse_ablation
+  output_dir: results
+  seed: 42
+  device: cuda
+
+data:
+  segy:
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
+    traces_per_shot: 201
+    time_downsample: 1
+  test_ratio: 0.1
+  loader:
+    batch_size: 32
+    num_workers: 4
+    pin_memory: true
+
+preprocess:
+  mask_mode: continuous
+  mask_ratio_range: [0.1, 0.3]
+  dt: 0.002
+  t0: 0.0
+  spherical_power: 1.2
+  normalize_mode: minmax
+  normalize_scope: global
+  patch_time: 128
+  patch_trace: 128
+  patch_overlap: 0.5
+  max_shots: null
+
+model:
+  type: yu2022_anet
+  params:
+    in_channels: 1
+    out_channels: 1
+    base_channels: 64
+    scaling_factor: 2
+    num_residual_blocks: 6
+    kernel_size: 3
+    attention_channels: null
+    attention_scaling: none
+    upsample_mode: nearest_conv
+    activation: relu
+    norm: batch
+    conv_bias: true
+    post_add_activation: true
+    attention_query_chunk_size: null
+    decoder_channels: null
+
+loss:
+  type: mse                 # ablation: full-patch MSE instead of -SSIM + L1
+  params:
+    reduction: mean
+
+metrics:
+  - name: snr
+    params: { reduction: per_sample }
+  - name: ssim
+    params: { data_range: 1.0, window_size: 11, sigma: 1.5 }
+  - name: mae
+    params: {}
+  - name: mse
+    params: {}
+
+optim:
+  type: adam
+  params:
+    lr: 1.0e-3
+
+scheduler:
+  type: none
+  params: {}
+
+train:
+  epochs: 20
+  grad_clip: null
+  log_step: false
+  log_interval: 20
+  eval_interval: 1
+  ckpt_interval: 5
+  vis_interval: 5
+  resume: null
+
+log:
+  log_dir: logs
+  plot_interval: 5
+
+inference:
+  data:
+    segy:
+      path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots10-18.sgy
+      traces_per_shot: 201
+      time_downsample: 1
+  checkpoint: results/interp_yu2022_anet_mse_ablation/checkpoints/best.pt
+  output_dir: results/interp_yu2022_anet_mse_ablation/inference
+  n_viz_shots: 5
+  device: 1
+  batch_size: 4
+  overwrite_observed: false

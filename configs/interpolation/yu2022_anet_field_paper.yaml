@@ -1,0 +1,127 @@
+# ---------------------------------------------------------------------------
+# Yu & Wu 2022 — ANet paper-aligned configuration (field: Mobil AVO Viking Graben)
+#
+# Paper: "Attention and Hybrid Loss Guided Deep Learning for Consecutively
+#         Missing Seismic Data Reconstruction"
+#        IEEE TGRS, vol. 60, pp. 1-8, 2022.
+# DOI:  10.1109/TGRS.2021.3068279
+#
+# Field profile differences vs. the synthetic profile (paper-explicit):
+#   - 720x120 patches (720 time samples x 120 traces, dt = 4 ms)
+#   - batch size 8
+# All other training settings match the synthetic experiment.
+# The Mobil AVO Viking Graben Line 12 data path below is a placeholder —
+# point it at the local SEG-Y copy before running.
+# Attention on 720x120 inputs gives N = 180*30 = 5400 tokens; exact query
+# chunking (repository-adaptation, mathematically identical) bounds memory.
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: interp_yu2022_anet_field_paper
+  output_dir: results
+  seed: 42
+  device: cuda
+
+data:
+  segy:
+    path: /path/to/mobil_avo_viking_graben_line12.sgy   # placeholder — set to local data
+    traces_per_shot: 120
+    time_downsample: 1
+  test_ratio: 0.2
+  loader:
+    batch_size: 8           # paper-explicit for the field experiment
+    num_workers: 4
+    pin_memory: true
+
+preprocess:
+  mask_mode: continuous
+  mask_ratio_range: [0.1, 0.3]  # paper-explicit range; per-patch sampling is a reproduction-assumption
+  dt: 0.004                 # paper-explicit: 4 ms temporal sampling
+  t0: 0.0
+  spherical_power: 1.2
+  normalize_mode: minmax    # paper-explicit: min-max to [0, 1]
+  normalize_scope: global   # scope unresolved in paper (repository-adaptation)
+  patch_time: 720           # paper-explicit 720x120 field patches
+  patch_trace: 120
+  patch_overlap: 0.5        # overlap not specified in paper (repository-adaptation)
+  max_shots: null
+
+model:
+  type: yu2022_anet
+  params:
+    in_channels: 1
+    out_channels: 1
+    base_channels: 64
+    scaling_factor: 2
+    num_residual_blocks: 6
+    kernel_size: 3
+    attention_channels: null
+    attention_scaling: none
+    upsample_mode: nearest_conv
+    activation: relu
+    norm: batch
+    conv_bias: true
+    post_add_activation: true
+    attention_query_chunk_size: 1024  # exact chunking for N=5400 (repository-adaptation)
+    decoder_channels: null
+
+loss:
+  type: anet_ssim_l1
+  params:
+    lambda_l1: 1.0
+    ssim_mode: global_patch
+    c1: 1.0e-4
+    c2: 9.0e-4
+
+metrics:
+  - name: snr
+    params: { reduction: per_sample }
+  - name: ssim
+    params: { data_range: 1.0, window_size: 11, sigma: 1.5 }
+  - name: mae
+    params: {}
+  - name: mse
+    params: {}
+
+optim:
+  type: adam
+  params:
+    lr: 1.0e-3              # paper-explicit (same as synthetic)
+
+scheduler:
+  type: none
+  params: {}
+
+train:
+  epochs: 20                # paper-explicit
+  grad_clip: null
+  log_step: false
+  log_interval: 20
+  eval_interval: 1
+  ckpt_interval: 5
+  vis_interval: 5
+  resume: null
+
+log:
+  log_dir: logs
+  plot_interval: 5
+
+inference:
+  checkpoint: results/interp_yu2022_anet_field_paper/checkpoints/best.pt
+  output_dir: results/interp_yu2022_anet_field_paper/inference
+  n_viz_shots: 5
+  device: 1
+  batch_size: 2
+  overwrite_observed: false  # paper profile evaluates the raw network output
+
+# ---------------------------------------------------------------------------
+# Paper alignment audit (only entries that differ from the synthetic profile;
+# see yu2022_anet_seg_c3_paper.yaml for the full architecture/loss audit)
+# ---------------------------------------------------------------------------
+paper_alignment:
+  training:
+    patch_size:   { classification: paper-explicit, value: [720, 120], evidence: "Field patches: 720 time samples x 120 traces" }
+    dt:           { classification: paper-explicit, value: 0.004,      evidence: "4 ms temporal sampling, 25 m spatial sampling" }
+    batch_size:   { classification: paper-explicit, value: 8,          evidence: "Field experiment batch size" }
+    dataset:      { classification: repository-adaptation, value: "Mobil AVO Viking Graben Line 12 (placeholder path)", evidence: "Paper splits 10,000 patches into 6k/2k/2k; local split uses test_ratio" }
+    query_chunk:  { classification: repository-adaptation, value: 1024, evidence: "Exact attention chunking; does not change results" }

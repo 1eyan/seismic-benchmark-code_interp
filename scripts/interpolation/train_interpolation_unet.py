@@ -172,6 +172,12 @@ def _patchify_pairs(
 
         missing_traces = prep.get("continuous_missing_traces")
         mask_ratio = float(prep.get("mask_ratio", 0.1))
+        mask_ratio_range = prep.get("mask_ratio_range")
+        if mask_ratio_range is not None and missing_traces is not None:
+            raise ValueError(
+                "preprocess.mask_ratio_range and preprocess.continuous_missing_traces "
+                "are mutually exclusive."
+            )
         if missing_traces is not None:
             n_missing = int(missing_traces)
             if not 1 <= n_missing < n_patch_traces:
@@ -183,12 +189,23 @@ def _patchify_pairs(
             n_missing = None
 
         patches_3d = target_patches[:, 0, :, :]
-        masked_3d, trace_mask_3d = mask_traces(
-            patches_3d,
-            mode="continuous",
-            ratio=mask_ratio,
-            missing_traces=n_missing,
-        )
+        if mask_ratio_range is not None:
+            # Per-patch missing ratio drawn from the range; seeded for
+            # reproducible masks across runs.
+            mask_rng = np.random.default_rng(int(cfg["experiment"]["seed"]))
+            masked_3d, trace_mask_3d = mask_traces(
+                patches_3d,
+                mode="continuous",
+                ratio_range=(float(mask_ratio_range[0]), float(mask_ratio_range[1])),
+                rng=mask_rng,
+            )
+        else:
+            masked_3d, trace_mask_3d = mask_traces(
+                patches_3d,
+                mode="continuous",
+                ratio=mask_ratio,
+                missing_traces=n_missing,
+            )
 
         input_patches = masked_3d[:, None, :, :]
 
@@ -279,9 +296,16 @@ def main() -> None:
         cfg["preprocess"]["continuous_missing_traces"] = args.continuous_missing_traces
 
     mask_mode = cfg["preprocess"].get("mask_mode", "continuous")
+    mask_ratio_range = cfg["preprocess"].get("mask_ratio_range")
     if mask_mode == "continuous" and args.continuous_missing_traces is not None:
         cfg["experiment"]["name"] = (
             f"{cfg['experiment']['name']}_{mask_mode}_miss{args.continuous_missing_traces}tr"
+        )
+    elif mask_ratio_range is not None:
+        lo_pct = int(round(float(mask_ratio_range[0]) * 100))
+        hi_pct = int(round(float(mask_ratio_range[1]) * 100))
+        cfg["experiment"]["name"] = (
+            f"{cfg['experiment']['name']}_{mask_mode}_miss{lo_pct}-{hi_pct}"
         )
     else:
         mask_ratio = cfg["preprocess"].get("mask_ratio", 0.2)

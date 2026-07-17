@@ -352,6 +352,78 @@ class WeightedCompositeLoss(BaseLoss):
         return total
 
 
+@register_loss("anet_ssim_l1")
+class ANetSSIML1Loss(BaseLoss):
+    """ANet hybrid loss ``-SSIM(pred, target) + lambda_l1 * L1(pred, target)``.
+
+    Reproduces the hybrid loss of Yu and Wu (IEEE TGRS 2022,
+    DOI 10.1109/TGRS.2021.3068279): SSIM uses per-sample global-patch
+    statistics (paper Eq. (1)-(6), ``c3 = c2 / 2`` merged form) and L1 is the
+    plain mean absolute error.  The loss equals ``-1`` for a perfect
+    reconstruction; this matches the paper and must not be shifted to
+    ``1 - SSIM``.  ``lambda_l1`` weights the L1 term (paper: 1.0).
+    """
+
+    def __init__(
+        self,
+        lambda_l1: float = 1.0,
+        ssim_mode: str = "global_patch",
+        c1: float = 1.0e-4,
+        c2: float = 9.0e-4,
+    ) -> None:
+        super().__init__()
+        if ssim_mode != "global_patch":
+            raise ValueError(
+                f"ANetSSIML1Loss supports ssim_mode='global_patch' only, got {ssim_mode!r}."
+            )
+        if c1 <= 0 or c2 <= 0:
+            raise ValueError(f"c1 and c2 must be positive, got c1={c1}, c2={c2}.")
+        self.lambda_l1 = float(lambda_l1)
+        self.ssim_mode = ssim_mode
+        self.c1 = float(c1)
+        self.c2 = float(c2)
+
+    def _global_patch_ssim(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Per-sample SSIM from global-patch statistics; returns shape ``(B,)``."""
+        x = pred.flatten(start_dim=1)
+        y = target.flatten(start_dim=1)
+        mu_x = x.mean(dim=1)
+        mu_y = y.mean(dim=1)
+        var_x = x.var(dim=1, unbiased=False)
+        var_y = y.var(dim=1, unbiased=False)
+        cov_xy = (x * y).mean(dim=1) - mu_x * mu_y
+        numerator = (2.0 * mu_x * mu_y + self.c1) * (2.0 * cov_xy + self.c2)
+        denominator = (mu_x.square() + mu_y.square() + self.c1) * (var_x + var_y + self.c2)
+        return numerator / denominator
+
+    def components(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Return ``loss_total`` / ``loss_ssim`` / ``loss_l1`` / ``ssim`` tensors."""
+        ssim = self._global_patch_ssim(pred, target).mean()
+        loss_ssim = -ssim
+        loss_l1 = (pred - target).abs().flatten(start_dim=1).mean(dim=1).mean()
+        loss_total = loss_ssim + self.lambda_l1 * loss_l1
+        return {
+            "loss_total": loss_total,
+            "loss_ssim": loss_ssim,
+            "loss_l1": loss_l1,
+            "ssim": ssim,
+        }
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: Optional[torch.Tensor] = None,
+        **extras: Any,
+    ) -> torch.Tensor:
+        if target is None:
+            raise ValueError("ANetSSIML1Loss requires `target`.")
+        return self.components(pred, target)["loss_total"]
+
+
 def build_loss(cfg: Dict[str, Any]) -> BaseLoss:
     """Instantiate a loss from a ``{type, params}`` config block."""
     name = cfg["type"]

@@ -1,0 +1,163 @@
+# ---------------------------------------------------------------------------
+# Yu & Wu 2022 — ANet paper-aligned configuration (synthetic SEG C3)
+#
+# Paper: "Attention and Hybrid Loss Guided Deep Learning for Consecutively
+#         Missing Seismic Data Reconstruction"
+#        IEEE TGRS, vol. 60, pp. 1-8, 2022.
+# DOI:  10.1109/TGRS.2021.3068279
+#
+# Paper-explicit: two stride-2 downsampling convs (64 -> 128), six residual
+# blocks, one non-local attention module, two upsampling+conv groups, hybrid
+# loss  -SSIM + lambda * L1  with lambda = 1, min-max normalization to [0,1],
+# 128x128 patches, 10%-30% consecutive missing traces, Adam lr=1e-3,
+# batch size 32, 20 epochs.
+# Kernel sizes, decoder channels, upsampling API, attention channel dims,
+# SSIM constants, and Adam betas are unresolved from the figure/paywall and
+# use documented reproduction-assumptions (see paper_alignment below).
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: interp_yu2022_anet_seg_c3_paper
+  output_dir: results
+  seed: 42
+  device: cuda
+
+data:
+  segy:
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
+    traces_per_shot: 201
+    time_downsample: 1
+  test_ratio: 0.1
+  loader:
+    batch_size: 32          # paper-explicit for the synthetic experiment
+    num_workers: 4
+    pin_memory: true
+
+preprocess:
+  mask_mode: continuous     # single contiguous block of whole traces
+  mask_ratio_range: [0.1, 0.3]  # paper-explicit range; per-patch U(0.1, 0.3) sampling is a reproduction-assumption
+  dt: 0.002
+  t0: 0.0
+  spherical_power: 1.2
+  normalize_mode: minmax    # paper-explicit: min-max to [0, 1]
+  normalize_scope: global   # scope unresolved in paper; global training stats (repository-adaptation)
+  patch_time: 128           # paper-explicit 128x128 patches
+  patch_trace: 128
+  patch_overlap: 0.5        # overlap not specified in paper (repository-adaptation)
+  max_shots: null
+
+model:
+  type: yu2022_anet
+  params:
+    in_channels: 1          # paper-explicit: missing patch only, no mask channel
+    out_channels: 1
+    base_channels: 64       # paper-explicit: 64 kernels in the first conv
+    scaling_factor: 2       # paper-explicit: two stride-2 downsampling stages
+    num_residual_blocks: 6  # paper-explicit
+    kernel_size: 3          # reproduction-assumption
+    attention_channels: null   # full-channel Q/K (paper-inferred)
+    attention_scaling: none    # no 1/sqrt(C) scaling (paper-inferred)
+    upsample_mode: nearest_conv  # reproduction-assumption (paper: "upsampling + convolution")
+    activation: relu        # paper-explicit
+    norm: batch             # paper-explicit (except upsampling and final layers)
+    conv_bias: true
+    post_add_activation: true
+    attention_query_chunk_size: null
+    decoder_channels: null  # defaults to (64, 32); reproduction-assumption
+
+loss:
+  type: anet_ssim_l1
+  params:
+    lambda_l1: 1.0          # paper-explicit; lambda weights the L1 term
+    ssim_mode: global_patch # paper Eq. (1)-(6) literal implementation
+    c1: 1.0e-4              # reproduction-assumption (K1=0.01, L=1)
+    c2: 9.0e-4              # reproduction-assumption (K2=0.03, L=1)
+
+metrics:
+  - name: snr               # == paper's reconstruction quality factor Q per sample
+    params: { reduction: per_sample }
+  - name: ssim
+    params: { data_range: 1.0, window_size: 11, sigma: 1.5 }
+  - name: mae
+    params: {}
+  - name: mse
+    params: {}
+
+optim:
+  type: adam
+  params:
+    lr: 1.0e-3              # paper-explicit
+
+scheduler:
+  type: none                # no scheduler mentioned in paper (paper-inferred)
+  params: {}
+
+train:
+  epochs: 20                # paper-explicit
+  grad_clip: null
+  log_step: false
+  log_interval: 20
+  eval_interval: 1
+  ckpt_interval: 5
+  vis_interval: 5
+  resume: null
+
+log:
+  log_dir: logs
+  plot_interval: 5
+
+inference:
+  data:
+    segy:
+      path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots10-18.sgy
+      traces_per_shot: 201
+      time_downsample: 1
+  checkpoint: results/interp_yu2022_anet_seg_c3_paper/checkpoints/best.pt
+  output_dir: results/interp_yu2022_anet_seg_c3_paper/inference
+  n_viz_shots: 5
+  device: 1
+  batch_size: 4
+  overwrite_observed: false  # paper profile evaluates the raw network output
+
+# ---------------------------------------------------------------------------
+# Paper alignment audit
+# ---------------------------------------------------------------------------
+paper_alignment:
+  architecture:
+    two_downsampling_convs:  { classification: paper-explicit, value: 2,            evidence: "Two conv layers squeeze spatial size; scaling factor 2 (Table IV)" }
+    base_channels:           { classification: paper-explicit, value: 64,           evidence: "First conv layer uses 64 kernels; channels double per stage" }
+    num_residual_blocks:     { classification: paper-explicit, value: 6,            evidence: "Six residual blocks, each two convs + residual connection (Table VI)" }
+    attention_module:        { classification: paper-explicit, value: 1,            evidence: "One attention module aggregating global correlations after residual body" }
+    upsampling_groups:       { classification: paper-explicit, value: 2,            evidence: "Two groups of upsampling and convolution restore resolution" }
+    bn_relu_placement:       { classification: paper-explicit, value: "all except upsampling and final layers", evidence: "Paper text" }
+    kernel_size:             { classification: reproduction-assumption, value: 3,   evidence: "Fig. 3 / Table V not machine-verifiable; 3x3 is the common default" }
+    decoder_channels:        { classification: reproduction-assumption, value: [64, 32], evidence: "Fig. 3 not machine-verifiable; mirror halving assumed" }
+    upsample_mode:           { classification: reproduction-assumption, value: nearest_conv, evidence: "Paper cites checkerboard-artifact issue; upsampling API unspecified" }
+    conv_bn_relu_order:      { classification: reproduction-assumption, value: conv_bn_relu, evidence: "Exact order not verifiable from text" }
+    attention_channels:      { classification: paper-inferred, value: full,         evidence: "No channel reduction mentioned; do not default to C/8" }
+    attention_scaling:       { classification: paper-inferred, value: none,         evidence: "No 1/sqrt(C) scaling described" }
+    no_mask_channel:         { classification: paper-explicit, value: true,         evidence: "Input is the corrupted patch only" }
+    zero_pad_arbitrary_size: { classification: repository-adaptation, value: true,  evidence: "Pad to multiple of 4 and crop back" }
+    query_chunking:          { classification: repository-adaptation, value: optional, evidence: "Mathematically exact memory adaptation" }
+  loss:
+    hybrid_formula:          { classification: paper-explicit, value: "-SSIM + lambda * L1", evidence: "Paper Eq.; loss = -1 at perfect reconstruction" }
+    lambda_l1:               { classification: paper-explicit, value: 1.0,          evidence: "Paper: lambda = 1 since data normalized to [0,1]" }
+    ssim_scope:              { classification: reproduction-assumption, value: global_patch, evidence: "Eq. (1)-(6) literal per-sample statistics; window scope unresolved" }
+    ssim_constants:          { classification: reproduction-assumption, value: [1.0e-4, 9.0e-4], evidence: "Paper: 'small constants', values unspecified; K1=0.01/K2=0.03, L=1" }
+  training:
+    normalization:           { classification: paper-explicit, value: "minmax [0,1]", evidence: "Paper text" }
+    normalization_scope:     { classification: repository-adaptation, value: global, evidence: "Scope unresolved in paper; train-set/global stats avoid leakage" }
+    patch_size:              { classification: paper-explicit, value: [128, 128],   evidence: "Synthetic experiment patch size" }
+    mask_pattern:            { classification: paper-explicit, value: "single consecutive trace block", evidence: "Consecutively missing traces" }
+    mask_ratio_range:        { classification: paper-explicit, value: [0.1, 0.3],   evidence: "10%-30% consecutive missing traces" }
+    ratio_sampling:          { classification: reproduction-assumption, value: "per-patch uniform", evidence: "Sampling law unspecified" }
+    mask_timing:             { classification: repository-adaptation, value: "static per-patch at dataset build", evidence: "Existing pre-computed patch pipeline; masks fixed across epochs" }
+    optimizer:               { classification: paper-explicit, value: adam,         evidence: "Paper: Adam" }
+    adam_betas:              { classification: reproduction-assumption, value: "torch defaults (0.9, 0.999)", evidence: "Not specified in paper" }
+    lr:                      { classification: paper-explicit, value: 1.0e-3,       evidence: "Paper: 1e-3" }
+    batch_size:              { classification: paper-explicit, value: 32,           evidence: "Synthetic experiment batch size" }
+    epochs:                  { classification: paper-explicit, value: 20,           evidence: "Paper: 20 epochs" }
+    scheduler:               { classification: paper-inferred, value: none,         evidence: "No scheduler mentioned" }
+    weight_decay:            { classification: reproduction-assumption, value: 0.0, evidence: "Not specified; torch Adam default" }
+    spherical_divergence:    { classification: repository-adaptation, value: true,  evidence: "Shared preprocessing across benchmark models (fairness)" }
+    dataset:                 { classification: repository-adaptation, value: "SEG C3 45-shot SEG-Y volume", evidence: "Paper uses SEG C3 (45 shots); local split differs from paper's 25k/10k/10k inline-section patches" }

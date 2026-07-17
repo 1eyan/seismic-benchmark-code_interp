@@ -160,6 +160,7 @@ def mask_traces(
     *,
     uniform_stride: Optional[int] = None,
     missing_traces: Optional[int] = None,
+    ratio_range: Optional[Tuple[float, float]] = None,
     rng: RNGLike = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Zero out traces along the trace axis and return the boolean mask.
@@ -177,6 +178,11 @@ def mask_traces(
                      for ``mode="continuous"``. When provided, ``ratio`` is
                      ignored for computing the mask length (but must still be
                      a valid float for backward compatibility).
+    ratio_range    : keyword-only; ``(low, high)`` with ``0 < low <= high < 1``;
+                     only valid for ``mode="random"`` / ``"continuous"``. Each
+                     shot draws its own missing fraction uniformly from the
+                     range; overrides ``ratio`` and is mutually exclusive with
+                     ``missing_traces``.
     rng            : seed / :class:`numpy.random.Generator`.
 
     Returns
@@ -193,6 +199,19 @@ def mask_traces(
         raise ValueError(
             f"missing_traces only applies when mode='continuous', got mode={mode!r}."
         )
+    if ratio_range is not None:
+        if mode == "uniform":
+            raise ValueError(
+                "ratio_range only applies when mode='random' or 'continuous', "
+                f"got mode={mode!r}."
+            )
+        if missing_traces is not None:
+            raise ValueError("ratio_range and missing_traces are mutually exclusive.")
+        low, high = float(ratio_range[0]), float(ratio_range[1])
+        if not (0.0 < low <= high < 1.0):
+            raise ValueError(
+                f"ratio_range must satisfy 0 < low <= high < 1, got {ratio_range!r}."
+            )
     gen = _as_generator(rng)
     x, was_2d = _as_3d(shots)
     n_shots, n_traces, _ = x.shape
@@ -212,28 +231,46 @@ def mask_traces(
         mask[:] = True
         mask[:, keep_idx] = False
     else:
-        if missing_traces is not None:
-            if not 1 <= missing_traces < n_traces:
-                raise ValueError(
-                    f"missing_traces must be in [1, {n_traces - 1}], "
-                    f"got {missing_traces}."
-                )
-            n_missing = missing_traces
+        if ratio_range is not None:
+            low, high = float(ratio_range[0]), float(ratio_range[1])
+            per_shot_ratio = gen.uniform(low, high, size=n_shots)
+            n_missing_vec = np.clip(
+                np.round(n_traces * per_shot_ratio).astype(np.int64), 1, n_traces - 1
+            )
+            if mode == "random":
+                keys = gen.random((n_shots, n_traces))
+                ranks = keys.argsort(axis=1).argsort(axis=1)
+                mask = ranks < n_missing_vec[:, None]
+            elif mode == "continuous":
+                u = gen.random(n_shots)
+                starts = np.floor(u * (n_traces - n_missing_vec + 1)).astype(np.int64)
+                cols = np.arange(n_traces)[None, :]
+                mask = (cols >= starts[:, None]) & (cols < (starts + n_missing_vec)[:, None])
+            else:
+                raise ValueError(f"Unknown mask mode: {mode!r}.")
         else:
-            if not 0.0 < ratio < 1.0:
-                raise ValueError(f"ratio must be in (0, 1), got {ratio}.")
-            n_missing = max(1, min(int(round(n_traces * ratio)), n_traces - 1))
-        rows = np.arange(n_shots)[:, None]
-        if mode == "random":
-            keys = gen.random((n_shots, n_traces))
-            idx = np.argpartition(keys, n_missing - 1, axis=1)[:, :n_missing]
-            mask[rows, idx] = True
-        elif mode == "continuous":
-            starts = gen.integers(0, n_traces - n_missing + 1, size=n_shots)
-            cols = starts[:, None] + np.arange(n_missing)[None, :]
-            mask[rows, cols] = True
-        else:
-            raise ValueError(f"Unknown mask mode: {mode!r}.")
+            if missing_traces is not None:
+                if not 1 <= missing_traces < n_traces:
+                    raise ValueError(
+                        f"missing_traces must be in [1, {n_traces - 1}], "
+                        f"got {missing_traces}."
+                    )
+                n_missing = missing_traces
+            else:
+                if not 0.0 < ratio < 1.0:
+                    raise ValueError(f"ratio must be in (0, 1), got {ratio}.")
+                n_missing = max(1, min(int(round(n_traces * ratio)), n_traces - 1))
+            rows = np.arange(n_shots)[:, None]
+            if mode == "random":
+                keys = gen.random((n_shots, n_traces))
+                idx = np.argpartition(keys, n_missing - 1, axis=1)[:, :n_missing]
+                mask[rows, idx] = True
+            elif mode == "continuous":
+                starts = gen.integers(0, n_traces - n_missing + 1, size=n_shots)
+                cols = starts[:, None] + np.arange(n_missing)[None, :]
+                mask[rows, cols] = True
+            else:
+                raise ValueError(f"Unknown mask mode: {mode!r}.")
 
     masked = x * (~mask)[..., None]
     return _restore(masked, was_2d), _restore(mask, was_2d)
