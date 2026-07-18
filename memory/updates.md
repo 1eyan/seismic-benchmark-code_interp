@@ -2,6 +2,14 @@
 
 > Chronological log of **important updates**. Record only: added/removed files, model-structure changes, loss/metric changes, dependency upgrades, API changes, critical bugfixes, open-source references. Trivia (typos, renames, reformatting) is **not** recorded.
 
+## 2026-07-11 - Switch default visualization colormap to seismic
+- Context: Users requested seismic-style colormaps for all training and inference visualizations instead of the default grayscale.
+- Change:
+  - Changed default `cmap` from `"gray"` to `"seismic"` in `utils/visualization.py` (`plot_sample`, `visualize_random_sample`, first-break overlay), `utils/inference_utils.py` (`save_shot_visualizations`), and `scripts/ground_roll_attenuation/train_denoise_ddpm.py`.
+  - Existing 99% symmetric clip and shared colorbar behavior (`share_scale=True`) are already in place, so input/prediction/target/residual panels continue to use identical `vmin/vmax`.
+- Impact: All newly generated visualization PNGs now use the seismic colormap by default. No API or config schema changes; callers can still override `cmap` explicitly.
+- Follow-up: If demand arises, expose `visualization.cmap` in YAML configs so users can switch without editing source.
+
 ## Entry template
 
 ```markdown
