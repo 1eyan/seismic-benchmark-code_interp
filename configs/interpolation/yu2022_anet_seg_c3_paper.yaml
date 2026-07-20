@@ -20,7 +20,7 @@ experiment:
   name: interp_yu2022_anet_seg_c3_paper
   output_dir: results
   seed: 42
-  device: cuda
+  device: cuda:1
 
 data:
   segy:
@@ -29,22 +29,26 @@ data:
     time_downsample: 1
   test_ratio: 0.1
   loader:
-    batch_size: 32          # paper-explicit for the synthetic experiment
+    batch_size: 128          # paper-explicit for the synthetic experiment
     num_workers: 4
     pin_memory: true
 
 preprocess:
-  mask_mode: continuous     # single contiguous block of whole traces
-  mask_ratio_range: [0.1, 0.3]  # paper-explicit range; per-patch U(0.1, 0.3) sampling is a reproduction-assumption
+  mask_mode: continuous
+  mask_ratio: 0.1
   dt: 0.002
   t0: 0.0
   spherical_power: 1.2
-  normalize_mode: minmax    # paper-explicit: min-max to [0, 1]
-  normalize_scope: global   # scope unresolved in paper; global training stats (repository-adaptation)
-  patch_time: 128           # paper-explicit 128x128 patches
+  uniform_stride: 2
+  normalize_mode: max_abs
+  normalize_scope: global
+  patch_normalize: true
+  patch_norm_eps: 1.0e-6
+  patch_time: 256
   patch_trace: 128
-  patch_overlap: 0.5        # overlap not specified in paper (repository-adaptation)
+  patch_overlap: 0.5
   max_shots: null
+
 
 model:
   type: yu2022_anet
@@ -93,7 +97,7 @@ scheduler:
   params: {}
 
 train:
-  epochs: 20                # paper-explicit
+  epochs: 50                # paper-explicit
   grad_clip: null
   log_step: false
   log_interval: 20
