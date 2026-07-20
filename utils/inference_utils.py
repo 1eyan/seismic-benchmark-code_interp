@@ -415,6 +415,7 @@ def save_shot_visualizations(
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     share_scale: bool = True,
+    save_npy: bool = False,
 ) -> List[Path]:
     """Save one 4-panel PNG per selected shot.
 
@@ -427,6 +428,8 @@ def save_shot_visualizations(
     save_dir     : directory for output PNGs (created if missing).
     title_prefix : prefix for figure titles and filenames.
     cmap         : Matplotlib colormap name.
+    save_npy     : if ``True``, also save ``input/prediction/target`` arrays for
+                   each selected shot under ``save_dir/data/``.
 
     Returns
     -------
@@ -434,6 +437,9 @@ def save_shot_visualizations(
     """
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
+    npy_dir = save_dir / "data" if save_npy else None
+    if npy_dir is not None:
+        npy_dir.mkdir(parents=True, exist_ok=True)
     paths: List[Path] = []
     for idx in indices:
         idx = int(idx)
@@ -450,4 +456,8 @@ def save_shot_visualizations(
             share_scale=share_scale,
         )
         paths.append(path)
+        if npy_dir is not None:
+            np.save(npy_dir / f"{title_prefix}_shot_{idx:04d}_input.npy", input_shots[idx])
+            np.save(npy_dir / f"{title_prefix}_shot_{idx:04d}_prediction.npy", pred_shots[idx])
+            np.save(npy_dir / f"{title_prefix}_shot_{idx:04d}_target.npy", target_shots[idx])
     return paths

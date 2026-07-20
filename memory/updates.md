@@ -29,6 +29,14 @@
 - Impact: FB-FRE band-pass filtering now adapts the cosine taper to each band's width, preserving more of the flat passband for narrow bands while still suppressing Gibbs ringing. Wide bands are capped at the config value to avoid excessive tapering.
 - Follow-up: Validate on a real volume that high-band metrics stabilize after the change.
 
+## 2026-07-20 - Save per-shot visualization arrays as .npy
+- Context: User wants to reuse the raw arrays behind inference visualization PNGs for downstream analysis or re-plotting.
+- Change:
+  - Added `save_npy: bool = False` parameter to `utils/inference_utils.py` `save_shot_visualizations`. When enabled, it creates `save_dir/data/` and writes `input`, `prediction`, and `target` arrays for each selected shot.
+  - Added `--save-viz-npy` / `--no-save-viz-npy` CLI flags to all inference scripts (`inference_denoise_unet.py`, `inference_denoise_res_unet.py`, `inference_denoise_SCRN.py`, `inference_denoise_dncnn.py`, `inference_denoise_atten_unet.py`, `inference_interpolation.py`). Default is `True`, so visualization arrays are saved automatically whenever visualization is enabled.
+- Impact: Every inference run now produces both PNGs and reusable `.npy` arrays for the selected shots. Users can disable with `--no-save-viz-npy` to save disk space.
+- Follow-up: Consider adding a config key `inference.save_viz_npy` so the default can be controlled from YAML without CLI flags.
+
 ## Entry template
 
 ```markdown
