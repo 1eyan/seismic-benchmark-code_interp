@@ -6,9 +6,28 @@
 - Context: Users requested seismic-style colormaps for all training and inference visualizations instead of the default grayscale.
 - Change:
   - Changed default `cmap` from `"gray"` to `"seismic"` in `utils/visualization.py` (`plot_sample`, `visualize_random_sample`, first-break overlay), `utils/inference_utils.py` (`save_shot_visualizations`), and `scripts/ground_roll_attenuation/train_denoise_ddpm.py`.
-  - Existing 99% symmetric clip and shared colorbar behavior (`share_scale=True`) are already in place, so input/prediction/target/residual panels continue to use identical `vmin/vmax`.
+  - Existing 98% symmetric clip and shared colorbar behavior (`share_scale=True`) are already in place, so input/prediction/target/residual panels continue to use identical `vmin/vmax`.
 - Impact: All newly generated visualization PNGs now use the seismic colormap by default. No API or config schema changes; callers can still override `cmap` explicitly.
 - Follow-up: If demand arises, expose `visualization.cmap` in YAML configs so users can switch without editing source.
+
+## 2026-07-20 - Fix EB-WSE scipy fallback
+- Context: Code review of `utils/eb_wse_metrics.py` found that the `_smooth_energy` fallback for missing `scipy` imported `scipy.ndimage.uniform_filter` a second time, so it would still crash when `scipy` was not installed.
+- Change:
+  - Added `_uniform_filter_numpy`, a pure-numpy N-D box filter with edge padding and "same" output shape.
+  - Updated `_smooth_energy` to use `_uniform_filter_numpy` when `scipy.ndimage.gaussian_filter` is unavailable, matching the existing docstring promise.
+- Impact: EB-WSE inference now degrades gracefully to a uniform energy smoothing fallback instead of raising `ImportError` on systems without `scipy`. Results are slightly different from Gaussian smoothing but remain deterministic and numerically stable.
+- Follow-up: Consider adding a unit test that temporarily blocks `scipy.ndimage` imports to lock in this fallback behavior.
+
+## 2026-07-20 - Change FB-FRE taper width to reduce Gibbs ringing
+- Context: Code review noted that `taper_width: 0.0` produces a rectangular FFT passband, causing Gibbs ringing in the time domain and leaking energy between adjacent frequency bands. After switching to a fixed `2.0` Hz taper, the user's narrow bands (e.g. `very_high` only 7 Hz wide) showed that a fixed Hz taper can consume too much of a narrow band's flat passband.
+- Change:
+  - `utils/inference_utils.py` (`compute_binned_metrics`) now computes the taper width per band as `0.1 * band_width` (10% of the band width). The config value `taper_width` is used only as an optional cap; ``null``/omitted means no cap.
+  - Updated `build_binned_metric_kwargs` so that omitted `taper_width` yields adaptive 10%-of-band tapering.
+  - Kept the default in `utils/fb_fre_metrics.py` (`frequency_binned_fidelity_metrics`) at `2.0` Hz for direct API callers.
+  - Updated all `configs/random_noise_suppression/*.yaml` files to explain the new cap semantics and left `taper_width: 2.0` as the cap.
+  - Updated docstrings in `utils/inference_utils.py`.
+- Impact: FB-FRE band-pass filtering now adapts the cosine taper to each band's width, preserving more of the flat passband for narrow bands while still suppressing Gibbs ringing. Wide bands are capped at the config value to avoid excessive tapering.
+- Follow-up: Validate on a real volume that high-band metrics stabilize after the change.
 
 ## Entry template
 
@@ -464,9 +483,18 @@
   - `utils/visualization.py` `plot_sample`: added `vmin`, `vmax`, `share_scale` parameters. Default is `share_scale=True`. When enabled (and no explicit `vmin`/`vmax` provided), a single symmetric scale is computed from the maximum of `_symmetric_clip` over input, prediction, and target, and applied to all panels including the residual.
   - `utils/visualization.py` `visualize_random_sample`: forwards `vmin`/`vmax`/`share_scale` to `plot_sample`.
   - `utils/inference_utils.py` `save_shot_visualizations`: forwards `vmin`/`vmax`/`share_scale` to `plot_sample`.
-  - `scripts/interpolation/inference_interpolation.py`: computes a run-level symmetric scale (`vmax = np.quantile(np.abs(concatenated volume), 0.995)`) and passes explicit `vmin=-vmax, vmax=vmax` to `save_shot_visualizations`, so every shot figure in the same inference run uses exactly the same color scale.
+  - `scripts/interpolation/inference_interpolation.py`: computes a run-level symmetric scale (`vmax = np.quantile(np.abs(concatenated volume), 0.98)`) and passes explicit `vmin=-vmax, vmax=vmax` to `save_shot_visualizations`, so every shot figure in the same inference run uses exactly the same color scale.
 - Impact: All training and inference visualizations now share a consistent color scale by default. Residual amplitudes are directly comparable to input/prediction/target. Backward compatibility is preserved: callers can still request per-panel adaptive scaling by passing `share_scale=False`.
 - Follow-up: If other inference scripts are added later, replicate the run-level `vmax` computation pattern.
+
+## 2026-07-20 - Change visualization clip quantile to 98%
+- Context: User requested a slightly tighter clip for training and inference visualizations to reduce the influence of extreme outliers on the color scale.
+- Change:
+  - Changed `_symmetric_clip` default `q` from `0.99` to `0.98` in `utils/visualization.py`.
+  - Changed run-level `vmax` quantile from `0.995` to `0.98` in `scripts/interpolation/inference_interpolation.py`, `scripts/random_noise_suppression/inference_denoise_unet.py`, `inference_denoise_res_unet.py`, `inference_denoise_SCRN.py`, `inference_denoise_dncnn.py`, and `inference_denoise_atten_unet.py`.
+  - Updated the Chinese usage doc (`使用说明.md`) to reference the new `0.98` quantile.
+- Impact: All visualization PNGs now clip at the 98th percentile of absolute amplitudes, making moderate-amplitude features more visible while still excluding the top 2% outliers. Older figures generated with 99% / 99.5% clips will use a slightly wider color range.
+- Follow-up: If demand arises, expose the clip quantile in YAML configs so users can tune it per experiment.
 
 ## 2026-05-06 - Shot-level (FFID) train/val/test splitting
 - Context: The existing `build_loaders` performed a patch-level random split, which could place patches from the same shot gather into both train and test sets, causing data leakage. The user requested splitting by unique FFID (shot number) in sequential order before patchifying, with configurable counts per split.

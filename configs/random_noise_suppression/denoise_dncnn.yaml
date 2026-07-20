@@ -195,5 +195,7 @@ inference:
       band_ratios: [0.20, 0.30, 0.30, 0.20]
       # Names assigned to each adaptive band in the JSON output.
       band_names: ["low", "mid", "high", "very_high"]
-      # Cosine taper width in Hz at band edges. 0.0 = rectangular passband.
-      taper_width: 0.0
+      # Cosine taper width in Hz at band edges. ``null``/omitted means the taper
+      # is 10% of each band width; a positive float caps the adaptive taper.
+      # ``0.0`` disables tapering (rectangular passband, Gibbs ringing).
+      taper_width: 2.0

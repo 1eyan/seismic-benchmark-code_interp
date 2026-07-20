@@ -15,23 +15,39 @@ from typing import Any, Dict, Sequence, Tuple
 import numpy as np
 
 
+def _uniform_filter_numpy(arr: np.ndarray, size: int) -> np.ndarray:
+    """Pure-numpy N-D box filter with 'same' output and edge padding."""
+    if size <= 1:
+        return arr.astype(np.float64, copy=False)
+
+    result = arr.astype(np.float64, copy=False)
+    half = size // 2
+    for axis in range(arr.ndim):
+        moved = np.moveaxis(result, axis, -1)
+        pad_width = [(0, 0)] * (arr.ndim - 1) + [(half, half)]
+        padded = np.pad(moved, pad_width, mode="edge")
+        cum = np.cumsum(padded, axis=-1)
+        filtered = (cum[..., size:] - cum[..., :-size]) / size
+        result = np.moveaxis(filtered, -1, axis)
+    return result
+
+
 def _smooth_energy(reference: np.ndarray, sigma: float) -> np.ndarray:
     """Compute smoothed energy map E = sqrt(gaussian_filter(S^2, sigma)).
 
     Falls back to a simple uniform average if ``scipy`` is unavailable.
     """
+    ref_sq = reference.astype(np.float64) ** 2
     try:
         from scipy.ndimage import gaussian_filter
 
-        return np.sqrt(gaussian_filter(reference.astype(np.float64) ** 2, sigma=sigma))
+        return np.sqrt(gaussian_filter(ref_sq, sigma=sigma))
     except ImportError:
-        # Fallback: uniform average with a box of size ~2*sigma+1 per axis
+        # scipy not installed: use a numpy-only uniform box filter.
         if sigma <= 0.0:
-            return np.sqrt(reference.astype(np.float64) ** 2)
+            return np.sqrt(ref_sq)
         half = max(1, int(round(sigma)))
-        from scipy.ndimage import uniform_filter  # may also fail, but gaussian already failed
-        # If we reach here, scipy is present but gaussian failed for some reason; reuse it.
-        return np.sqrt(uniform_filter(reference.astype(np.float64) ** 2, size=2 * half + 1))
+        return np.sqrt(_uniform_filter_numpy(ref_sq, size=2 * half + 1))
 
 
 def energy_binned_weak_signal_metrics(

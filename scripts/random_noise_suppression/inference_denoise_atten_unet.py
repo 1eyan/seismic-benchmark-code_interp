@@ -418,7 +418,7 @@ def main() -> None:
     indices = select_random_shots(n_shots, n_viz_shots, seed=seed)
     vmax = float(np.quantile(np.abs(np.concatenate([
         input_shots.ravel(), pred_shots.ravel(), target_shots.ravel()
-    ])), 0.995))
+    ])), 0.98))
 
     save_shot_visualizations(
         input_shots=input_shots,

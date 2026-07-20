@@ -173,7 +173,7 @@ def compute_binned_metrics(
     fb_rel_threshold: float = 0.001,
     fb_band_ratios: Sequence[float] = (0.20, 0.30, 0.30, 0.20),
     fb_band_names: Sequence[str] = ("low", "mid", "high", "very_high"),
-    fb_taper_width: float = 0.0,
+    fb_taper_width: Optional[float] = None,
     eps: float = 1e-8,
 ) -> Dict[str, Any]:
     """Compute mean EB-WSE and FB-FRE metrics over all shots.
@@ -195,7 +195,11 @@ def compute_binned_metrics(
     fb_rel_threshold : fraction of peak power used to define the effective band.
     fb_band_ratios   : relative widths of the adaptive FB-FRE bands; must sum to 1.
     fb_band_names    : name for each adaptive FB-FRE band.
-    fb_taper_width   : cosine taper width in Hz at band edges; ``0.0`` is rectangular.
+    fb_taper_width   : optional cap on the cosine taper width in Hz. When
+        ``None``, each band uses ``0.1 * band_width`` as its taper width.
+        When a positive float is given, the actual taper is
+        ``min(0.1 * band_width, fb_taper_width)``. ``0.0`` disables tapering
+        (rectangular passband).
     eps              : small constant to avoid division by zero.
 
     Returns
@@ -283,11 +287,15 @@ def compute_binned_metrics(
         for i in range(n_shots):
             total_energy = float(np.sum(tgt[i] ** 2))
             for band_name, (fmin, fmax) in bands:
+                band_width = fmax - fmin
+                taper_width = 0.1 * band_width
+                if fb_taper_width is not None:
+                    taper_width = min(taper_width, fb_taper_width)
                 ref_band = _bandpass_filter(
-                    tgt[i], dt, fmin, fmax, taper_width=fb_taper_width
+                    tgt[i], dt, fmin, fmax, taper_width=taper_width
                 )
                 pred_band = _bandpass_filter(
-                    pred[i], dt, fmin, fmax, taper_width=fb_taper_width
+                    pred[i], dt, fmin, fmax, taper_width=taper_width
                 )
                 diff = pred_band - ref_band
                 ref_energy = float(np.sum(ref_band ** 2))
@@ -337,10 +345,15 @@ def build_binned_metric_kwargs(infer_cfg: Dict[str, Any]) -> Dict[str, Any]:
               rel_threshold: 0.001
               band_ratios: [0.20, 0.30, 0.30, 0.20]
               band_names: ["low", "mid", "high", "very_high"]
-              taper_width: 0.0
+              # ``null``/omitted -> taper is 10% of each band width.
+              # Positive float -> cap the adaptive taper at that Hz.
+              # ``0.0`` -> rectangular passband (Gibbs ringing).
+              taper_width: 2.0
 
     Missing fields use the same defaults as ``compute_binned_metrics``, so older
-    configs without ``binned_metrics`` continue to work.
+    configs without ``binned_metrics`` continue to work. A config that omits
+    ``taper_width`` now gets adaptive 10%-of-band tapering instead of a fixed Hz
+    value.
 
     Parameters
     ----------
@@ -377,7 +390,7 @@ def build_binned_metric_kwargs(infer_cfg: Dict[str, Any]) -> Dict[str, Any]:
         kwargs["fb_band_names"] = tuple(
             fb_cfg.get("band_names", ("low", "mid", "high", "very_high"))
         )
-        kwargs["fb_taper_width"] = fb_cfg.get("taper_width", 0.0)
+        kwargs["fb_taper_width"] = fb_cfg.get("taper_width", None)
 
     return kwargs
 
