@@ -1,0 +1,150 @@
+# ---------------------------------------------------------------------------
+# Li et al. 2022 — CA-Unet paper-aligned configuration (synthetic SEG C3)
+#
+# Paper: "CA-Unet: Coordinate Attention U-Net for Seismic Data Reconstruction"
+#        IEEE (TGRS or GRSL, 2022) — exact title behind paywall.
+#
+# Paper-explicit: standard U-Net encoder-decoder backbone with Coordinate
+# Attention blocks (directional H/W pooling, shared 1x1 conv, H-Swish,
+# split, two 1x1 convs, Sigmoid, element-wise multiply), hybrid SSIM+L1
+# loss, consecutively missing traces.
+# Kernel sizes, channel counts, depth, CA placement, training hyperparams,
+# and SSIM constants are unresolved from the paywall and use documented
+# reproduction-assumptions (see paper_alignment below).
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: interp_li2022_caunet_seg_c3_paper
+  output_dir: results
+  seed: 42
+  device: cuda
+
+data:
+  segy:
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
+    traces_per_shot: 201
+    time_downsample: 1
+  test_ratio: 0.1
+  loader:
+    batch_size: 32          # paper-inferred (same task/domain as ANet)
+    num_workers: 4
+    pin_memory: true
+
+preprocess:
+  mask_mode: continuous     # single contiguous block of whole traces
+  mask_ratio_range: [0.1, 0.3]  # paper-inferred (matching ANet baseline; Li et al. range paywalled)
+  dt: 0.002
+  t0: 0.0
+  spherical_power: 1.2
+  normalize_mode: minmax    # paper-inferred (Li et al. details paywalled)
+  normalize_scope: global   # repository-adaptation
+  patch_time: 128           # paper-inferred (matching ANet)
+  patch_trace: 128
+  patch_overlap: 0.5        # repository-adaptation
+  max_shots: null
+
+model:
+  type: li2022_caunet
+  params:
+    in_channels: 1          # paper-explicit: missing patch only, no mask channel
+    out_channels: 1
+    base_channels: 32       # paper-inferred: conservative default (~1M params)
+    depth: 3                # paper-inferred: "7-layer U-Net" (3 enc + 1 bot + 3 dec)
+    ca_reduction_ratio: 16  # paper-standard (Hou et al. CVPR 2021)
+    kernel_size: 3          # reproduction-assumption
+
+loss:
+  type: ssim_l1             # generic alias for ANetSSIML1Loss
+  params:
+    lambda_l1: 1.0          # paper-inferred (Li et al. detail paywalled)
+    ssim_mode: global_patch
+    c1: 1.0e-4              # reproduction-assumption (K1=0.01, L=1)
+    c2: 9.0e-4              # reproduction-assumption (K2=0.03, L=1)
+
+metrics:
+  - name: snr
+    params: { reduction: per_sample }
+  - name: ssim
+    params: { data_range: 1.0, window_size: 11, sigma: 1.5 }
+  - name: mae
+    params: {}
+  - name: mse
+    params: {}
+
+optim:
+  type: adam
+  params:
+    lr: 1.0e-3              # paper-inferred (same domain as ANet)
+
+scheduler:
+  type: none                # paper-inferred
+  params: {}
+
+train:
+  epochs: 20                # paper-inferred (same domain as ANet)
+  grad_clip: null
+  log_step: false
+  log_interval: 20
+  eval_interval: 1
+  ckpt_interval: 5
+  vis_interval: 5
+  resume: null
+
+log:
+  log_dir: logs
+  plot_interval: 5
+
+inference:
+  data:
+    segy:
+      path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots10-18.sgy
+      traces_per_shot: 201
+      time_downsample: 1
+  checkpoint: results/interp_li2022_caunet_seg_c3_paper/checkpoints/best.pt
+  output_dir: results/interp_li2022_caunet_seg_c3_paper/inference
+  n_viz_shots: 5
+  device: 1
+  batch_size: 4
+  overwrite_observed: false  # paper profile evaluates the raw network output
+
+# ---------------------------------------------------------------------------
+# Paper alignment audit
+# ---------------------------------------------------------------------------
+paper_alignment:
+  architecture:
+    unet_backbone:        { classification: paper-explicit, value: "U-Net encoder-decoder with skip connections", evidence: "Paper title and abstract" }
+    coordinate_attention: { classification: paper-explicit, value: "Coordinate Attention blocks", evidence: "Paper title and abstract" }
+    ca_formula:           { classification: paper-explicit, value: "directional H/W pooling, shared 1x1 conv, BN, H-Swish, split, two 1x1 convs, Sigmoid, multiply", evidence: "Hou et al. CVPR 2021 Eq. (2)-(4)" }
+    ca_pooling:           { classification: paper-explicit, value: "AdaptiveAvgPool2d (H,1) and (1,W)", evidence: "Hou et al. CVPR 2021: directional strip pooling" }
+    ca_activation:        { classification: paper-explicit, value: "H-Swish (x*ReLU6(x+3)/6)", evidence: "Hou et al. CVPR 2021: nonlinearity in shared transform" }
+    base_channels:        { classification: paper-inferred, value: 32, evidence: "Li et al. paper behind paywall; conservative default ~1M params" }
+    depth:                { classification: paper-inferred, value: 3, evidence: "Paper behind paywall; depth=3 provides 7 layers" }
+    ca_reduction_ratio:   { classification: paper-inferred, value: 16, evidence: "Standard from Hou et al.; not verified from Li et al. paper" }
+    ca_placement:         { classification: paper-inferred, value: "after every double-conv (7 CA blocks)", evidence: "Paper behind paywall; canonical CA-U-Net interpretation" }
+    kernel_size:          { classification: reproduction-assumption, value: 3, evidence: "Not verified from paper (paywall)" }
+    conv_bn_relu_order:   { classification: reproduction-assumption, value: "Conv -> BN -> ReLU", evidence: "Matches base UNet convention; not verified from paper" }
+    upsampling:           { classification: reproduction-assumption, value: "ConvTranspose2d (kernel=2, stride=2)", evidence: "Matches base UNet; not verified from paper" }
+    no_mask_channel:      { classification: paper-explicit, value: true, evidence: "Input is the corrupted patch only" }
+  loss:
+    hybrid_formula:       { classification: paper-inferred, value: "-SSIM + lambda * L1", evidence: "Li et al. paper mentions SSIM+L1 hybrid; exact formula unresolved" }
+    lambda_l1:            { classification: paper-inferred, value: 1.0, evidence: "Not verified from paper" }
+    ssim_scope:           { classification: reproduction-assumption, value: global_patch, evidence: "Eq. (1)-(6) literal per-sample statistics; window scope unresolved" }
+    ssim_constants:       { classification: reproduction-assumption, value: [1.0e-4, 9.0e-4], evidence: "K1=0.01/K2=0.03, L=1" }
+    loss_alias:           { classification: repository-adaptation, value: "ssim_l1 alias for ANetSSIML1Loss", evidence: "Same formula; alias avoids cross-model dependency" }
+  training:
+    normalization:        { classification: paper-inferred, value: "minmax [0,1]", evidence: "Not verified from paper (paywall)" }
+    normalization_scope:  { classification: repository-adaptation, value: global, evidence: "Scope unresolved in paper" }
+    patch_size:           { classification: paper-inferred, value: [128, 128], evidence: "Not verified from paper; matches ANet baseline" }
+    mask_pattern:         { classification: paper-explicit, value: "consecutive missing traces", evidence: "Paper title: consecutively missing seismic data reconstruction" }
+    mask_ratio_range:     { classification: paper-inferred, value: [0.1, 0.3], evidence: "Not verified from paper; matches ANet for fair comparison" }
+    ratio_sampling:       { classification: reproduction-assumption, value: "per-patch uniform", evidence: "Sampling law unspecified" }
+    mask_timing:          { classification: repository-adaptation, value: "static per-patch at dataset build", evidence: "Existing pre-computed patch pipeline; masks fixed across epochs" }
+    optimizer:            { classification: paper-inferred, value: Adam, evidence: "Not verified from paper" }
+    lr:                   { classification: paper-inferred, value: 1.0e-3, evidence: "Not verified from paper" }
+    adam_betas:           { classification: reproduction-assumption, value: "torch defaults (0.9, 0.999)", evidence: "Not specified in available excerpts" }
+    batch_size:           { classification: paper-inferred, value: 32, evidence: "Not verified from paper" }
+    epochs:               { classification: paper-inferred, value: 20, evidence: "Not verified from paper" }
+    scheduler:            { classification: paper-inferred, value: none, evidence: "Not mentioned in available excerpts" }
+    weight_decay:         { classification: reproduction-assumption, value: 0.0, evidence: "Not specified; torch Adam default" }
+    spherical_divergence: { classification: repository-adaptation, value: true, evidence: "Shared preprocessing across benchmark models (fairness)" }
+    dataset:              { classification: repository-adaptation, value: "SEG C3 45-shot SEG-Y volume", evidence: "Paper data split unresolved; local split differs" }

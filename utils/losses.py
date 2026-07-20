@@ -424,6 +424,10 @@ class ANetSSIML1Loss(BaseLoss):
         return self.components(pred, target)["loss_total"]
 
 
+# Alias: generic SSIM+L1 hybrid loss (same formula used by ANet, CA-Unet, etc.).
+LOSS_REGISTRY["ssim_l1"] = ANetSSIML1Loss
+
+
 def build_loss(cfg: Dict[str, Any]) -> BaseLoss:
     """Instantiate a loss from a ``{type, params}`` config block."""
     name = cfg["type"]

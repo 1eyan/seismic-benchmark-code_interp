@@ -803,3 +803,48 @@
   dims, SSIM scope/constants, and Adam betas, then upgrade the corresponding
   reproduction-assumption entries. Set the Mobil AVO Viking Graben SEG-Y path
   in the field config before running it.
+
+## 2026-07-17 - Add Li2022 CA-Unet reproduction (Coordinate Attention U-Net)
+
+- Context: Reproduce Li et al., "CA-Unet: Coordinate Attention U-Net for
+  Seismic Data Reconstruction" (IEEE, 2022) in the interpolation benchmark.
+  The paper is behind IEEE paywall with no official code; architecture and
+  hyperparameters are classified as paper-inferred or reproduction-assumptions.
+  The Coordinate Attention formula follows Hou et al. CVPR 2021.
+- Change:
+  - `model/interpolation/li2022_caunet.py` (new) — `CoordAttention2D`
+    (directional H/W pooling, shared 1x1 conv, BN, H-Swish, split, two 1x1
+    convs, Sigmoid, element-wise multiply), `Li2022CAUNet` (@register_model
+    "li2022_caunet": U-Net encoder-decoder with 7 CA blocks — one after every
+    _DoubleConv stage; depth=3, base_channels=32, channel progression
+    [32,64,128]→256).
+  - `model/interpolation/__init__.py` — added `from . import li2022_caunet`.
+  - `utils/losses.py` — added `LOSS_REGISTRY["ssim_l1"] = ANetSSIML1Loss`
+    alias (2 lines); existing `anet_ssim_l1` entry and all ANet configs
+    untouched.
+  - Configs (new): `configs/interpolation/li2022_caunet_seg_c3_paper.yaml`
+    (128x128 patches, 10%-30% consecutive missing, minmax [0,1], Adam 1e-3,
+    batch 32, 20 epochs) and `li2022_caunet_field_paper.yaml` (720x120, batch
+    8); both use `loss.type: ssim_l1` alias and carry `paper_alignment` audit
+    blocks.
+  - Tests (new): `tests/test_li2022_caunet_attention.py` (CA block: shapes,
+    directional pooling, sigmoid range, H-Swish, gradients, spatial
+    dependency, no 2D global pool), `_architecture.py` (7 CA blocks, channel
+    progression, MaxPool2d/ConvTranspose2d, no forbidden modules, shape &
+    validation tests), `_loss.py` (alias identity, factory build, exact
+    values), `_training.py` (gradients, one-batch overfit, trainer
+    compatibility via alias), `_configs.py` (config loading, hyperparameter
+    audit, paper_alignment format).
+  - `model/interpolation/li2022_caunet_notes.md` (new) — full reproduction
+    notes with architecture diagram, CA formula, setting classification
+    table, and verification status.
+- Impact: CA-Unet is available as `li2022_caunet`; the SSIM+L1 loss is
+  available under the generic alias `ssim_l1`. No shared infrastructure
+  changes beyond the 2-line loss alias. All ANet configs and tests continue
+  to work unchanged.
+- Follow-up: Local dev machine has no PyTorch — run the five CA-Unet test
+  files on the training server. When the Li et al. paper PDF becomes
+  available, verify base_channels, depth, CA placement, CA reduction ratio,
+  loss formula, and training hyperparameters, then upgrade the corresponding
+  paper-inferred entries. Set the field SEG-Y path in the field config before
+  running it.

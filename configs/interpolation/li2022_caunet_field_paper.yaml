@@ -1,0 +1,128 @@
+# ---------------------------------------------------------------------------
+# Li et al. 2022 — CA-Unet paper-aligned configuration (field data)
+#
+# Paper: "CA-Unet: Coordinate Attention U-Net for Seismic Data Reconstruction"
+#        IEEE (TGRS or GRSL, 2022) — exact title behind paywall.
+#
+# Field profile with 720-time x 120-trace patches.  All paper-inferred and
+# reproduction-assumption classifications inherited from the synthetic config.
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: interp_li2022_caunet_field_paper
+  output_dir: results
+  seed: 42
+  device: cuda
+
+data:
+  segy:
+    path: /NAS/czt/mount/chengzhitong/data/MobilAVO_Viking_Graben/mobil_avo_viking_graben.sgy
+    traces_per_shot: 120
+    time_downsample: 1
+  test_ratio: 0.1
+  loader:
+    batch_size: 8           # paper-inferred (matching ANet field profile)
+    num_workers: 4
+    pin_memory: true
+
+preprocess:
+  mask_mode: continuous
+  mask_ratio_range: [0.1, 0.3]
+  dt: 0.004
+  t0: 0.0
+  spherical_power: 1.2
+  normalize_mode: minmax
+  normalize_scope: global
+  patch_time: 720           # field patch size matching ANet
+  patch_trace: 120
+  patch_overlap: 0.5
+  max_shots: null
+
+model:
+  type: li2022_caunet
+  params:
+    in_channels: 1
+    out_channels: 1
+    base_channels: 32
+    depth: 3
+    ca_reduction_ratio: 16
+    kernel_size: 3
+
+loss:
+  type: ssim_l1
+  params:
+    lambda_l1: 1.0
+    ssim_mode: global_patch
+    c1: 1.0e-4
+    c2: 9.0e-4
+
+metrics:
+  - name: snr
+    params: { reduction: per_sample }
+  - name: ssim
+    params: { data_range: 1.0, window_size: 11, sigma: 1.5 }
+  - name: mae
+    params: {}
+  - name: mse
+    params: {}
+
+optim:
+  type: adam
+  params:
+    lr: 1.0e-3
+
+scheduler:
+  type: none
+  params: {}
+
+train:
+  epochs: 20
+  grad_clip: null
+  log_step: false
+  log_interval: 20
+  eval_interval: 1
+  ckpt_interval: 5
+  vis_interval: 5
+  resume: null
+
+log:
+  log_dir: logs
+  plot_interval: 5
+
+inference:
+  data:
+    segy:
+      path: /NAS/czt/mount/chengzhitong/data/MobilAVO_Viking_Graben/mobil_avo_viking_graben.sgy
+      traces_per_shot: 120
+      time_downsample: 1
+  checkpoint: results/interp_li2022_caunet_field_paper/checkpoints/best.pt
+  output_dir: results/interp_li2022_caunet_field_paper/inference
+  n_viz_shots: 5
+  device: 1
+  batch_size: 4
+  overwrite_observed: false
+
+paper_alignment:
+  architecture:
+    unet_backbone:        { classification: paper-explicit, value: "U-Net encoder-decoder with skip connections", evidence: "Paper title and abstract" }
+    coordinate_attention: { classification: paper-explicit, value: "Coordinate Attention blocks", evidence: "Paper title and abstract" }
+    ca_formula:           { classification: paper-explicit, value: "directional H/W pooling, shared 1x1 conv, BN, H-Swish, split, two 1x1 convs, Sigmoid, multiply", evidence: "Hou et al. CVPR 2021" }
+    base_channels:        { classification: paper-inferred, value: 32, evidence: "Li et al. paper behind paywall" }
+    depth:                { classification: paper-inferred, value: 3, evidence: "Paper behind paywall" }
+    ca_reduction_ratio:   { classification: paper-inferred, value: 16, evidence: "Standard from Hou et al." }
+    ca_placement:         { classification: paper-inferred, value: "after every double-conv (7 CA blocks)", evidence: "Paper behind paywall" }
+    kernel_size:          { classification: reproduction-assumption, value: 3, evidence: "Not verified from paper (paywall)" }
+  loss:
+    hybrid_formula:       { classification: paper-inferred, value: "-SSIM + lambda * L1", evidence: "Li et al. paper mentions SSIM+L1 hybrid" }
+    lambda_l1:            { classification: paper-inferred, value: 1.0, evidence: "Not verified from paper" }
+    loss_alias:           { classification: repository-adaptation, value: "ssim_l1 alias for ANetSSIML1Loss", evidence: "Same formula" }
+  training:
+    normalization:        { classification: paper-inferred, value: "minmax [0,1]", evidence: "Not verified from paper" }
+    patch_size:           { classification: paper-inferred, value: [720, 120], evidence: "Not verified from paper; matches ANet field profile" }
+    mask_pattern:         { classification: paper-explicit, value: "consecutive missing traces", evidence: "Paper title" }
+    mask_ratio_range:     { classification: paper-inferred, value: [0.1, 0.3], evidence: "Not verified from paper" }
+    optimizer:            { classification: paper-inferred, value: Adam, evidence: "Not verified from paper" }
+    lr:                   { classification: paper-inferred, value: 1.0e-3, evidence: "Not verified from paper" }
+    batch_size:           { classification: paper-inferred, value: 8, evidence: "Not verified from paper; matches ANet field profile" }
+    epochs:               { classification: paper-inferred, value: 20, evidence: "Not verified from paper" }
+    dataset:              { classification: repository-adaptation, value: "Mobil AVO Viking Graben SEG-Y volume", evidence: "Paper field data details unresolved" }
