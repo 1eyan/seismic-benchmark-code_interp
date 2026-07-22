@@ -282,7 +282,7 @@ def _visualize_ddpm_sample(
         target=x_0_true,
         save_path=save_path,
         title=full_title,
-        cmap="gray",
+        cmap="seismic",
     )
 
 

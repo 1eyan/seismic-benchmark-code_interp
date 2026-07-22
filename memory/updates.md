@@ -2,6 +2,41 @@
 
 > Chronological log of **important updates**. Record only: added/removed files, model-structure changes, loss/metric changes, dependency upgrades, API changes, critical bugfixes, open-source references. Trivia (typos, renames, reformatting) is **not** recorded.
 
+## 2026-07-11 - Switch default visualization colormap to seismic
+- Context: Users requested seismic-style colormaps for all training and inference visualizations instead of the default grayscale.
+- Change:
+  - Changed default `cmap` from `"gray"` to `"seismic"` in `utils/visualization.py` (`plot_sample`, `visualize_random_sample`, first-break overlay), `utils/inference_utils.py` (`save_shot_visualizations`), and `scripts/ground_roll_attenuation/train_denoise_ddpm.py`.
+  - Existing 98% symmetric clip and shared colorbar behavior (`share_scale=True`) are already in place, so input/prediction/target/residual panels continue to use identical `vmin/vmax`.
+- Impact: All newly generated visualization PNGs now use the seismic colormap by default. No API or config schema changes; callers can still override `cmap` explicitly.
+- Follow-up: If demand arises, expose `visualization.cmap` in YAML configs so users can switch without editing source.
+
+## 2026-07-20 - Fix EB-WSE scipy fallback
+- Context: Code review of `utils/eb_wse_metrics.py` found that the `_smooth_energy` fallback for missing `scipy` imported `scipy.ndimage.uniform_filter` a second time, so it would still crash when `scipy` was not installed.
+- Change:
+  - Added `_uniform_filter_numpy`, a pure-numpy N-D box filter with edge padding and "same" output shape.
+  - Updated `_smooth_energy` to use `_uniform_filter_numpy` when `scipy.ndimage.gaussian_filter` is unavailable, matching the existing docstring promise.
+- Impact: EB-WSE inference now degrades gracefully to a uniform energy smoothing fallback instead of raising `ImportError` on systems without `scipy`. Results are slightly different from Gaussian smoothing but remain deterministic and numerically stable.
+- Follow-up: Consider adding a unit test that temporarily blocks `scipy.ndimage` imports to lock in this fallback behavior.
+
+## 2026-07-20 - Change FB-FRE taper width to reduce Gibbs ringing
+- Context: Code review noted that `taper_width: 0.0` produces a rectangular FFT passband, causing Gibbs ringing in the time domain and leaking energy between adjacent frequency bands. After switching to a fixed `2.0` Hz taper, the user's narrow bands (e.g. `very_high` only 7 Hz wide) showed that a fixed Hz taper can consume too much of a narrow band's flat passband.
+- Change:
+  - `utils/inference_utils.py` (`compute_binned_metrics`) now computes the taper width per band as `0.1 * band_width` (10% of the band width). The config value `taper_width` is used only as an optional cap; ``null``/omitted means no cap.
+  - Updated `build_binned_metric_kwargs` so that omitted `taper_width` yields adaptive 10%-of-band tapering.
+  - Kept the default in `utils/fb_fre_metrics.py` (`frequency_binned_fidelity_metrics`) at `2.0` Hz for direct API callers.
+  - Updated all `configs/random_noise_suppression/*.yaml` files to explain the new cap semantics and left `taper_width: 2.0` as the cap.
+  - Updated docstrings in `utils/inference_utils.py`.
+- Impact: FB-FRE band-pass filtering now adapts the cosine taper to each band's width, preserving more of the flat passband for narrow bands while still suppressing Gibbs ringing. Wide bands are capped at the config value to avoid excessive tapering.
+- Follow-up: Validate on a real volume that high-band metrics stabilize after the change.
+
+## 2026-07-20 - Save per-shot visualization arrays as .npy
+- Context: User wants to reuse the raw arrays behind inference visualization PNGs for downstream analysis or re-plotting.
+- Change:
+  - Added `save_npy: bool = False` parameter to `utils/inference_utils.py` `save_shot_visualizations`. When enabled, it creates `save_dir/data/` and writes `input`, `prediction`, and `target` arrays for each selected shot.
+  - Added `--save-viz-npy` / `--no-save-viz-npy` CLI flags to all inference scripts (`inference_denoise_unet.py`, `inference_denoise_res_unet.py`, `inference_denoise_SCRN.py`, `inference_denoise_dncnn.py`, `inference_denoise_atten_unet.py`, `inference_interpolation.py`). Default is `True`, so visualization arrays are saved automatically whenever visualization is enabled.
+- Impact: Every inference run now produces both PNGs and reusable `.npy` arrays for the selected shots. Users can disable with `--no-save-viz-npy` to save disk space.
+- Follow-up: Consider adding a config key `inference.save_viz_npy` so the default can be controlled from YAML without CLI flags.
+
 ## Entry template
 
 ```markdown
@@ -456,9 +491,18 @@
   - `utils/visualization.py` `plot_sample`: added `vmin`, `vmax`, `share_scale` parameters. Default is `share_scale=True`. When enabled (and no explicit `vmin`/`vmax` provided), a single symmetric scale is computed from the maximum of `_symmetric_clip` over input, prediction, and target, and applied to all panels including the residual.
   - `utils/visualization.py` `visualize_random_sample`: forwards `vmin`/`vmax`/`share_scale` to `plot_sample`.
   - `utils/inference_utils.py` `save_shot_visualizations`: forwards `vmin`/`vmax`/`share_scale` to `plot_sample`.
-  - `scripts/interpolation/inference_interpolation.py`: computes a run-level symmetric scale (`vmax = np.quantile(np.abs(concatenated volume), 0.995)`) and passes explicit `vmin=-vmax, vmax=vmax` to `save_shot_visualizations`, so every shot figure in the same inference run uses exactly the same color scale.
+  - `scripts/interpolation/inference_interpolation.py`: computes a run-level symmetric scale (`vmax = np.quantile(np.abs(concatenated volume), 0.98)`) and passes explicit `vmin=-vmax, vmax=vmax` to `save_shot_visualizations`, so every shot figure in the same inference run uses exactly the same color scale.
 - Impact: All training and inference visualizations now share a consistent color scale by default. Residual amplitudes are directly comparable to input/prediction/target. Backward compatibility is preserved: callers can still request per-panel adaptive scaling by passing `share_scale=False`.
 - Follow-up: If other inference scripts are added later, replicate the run-level `vmax` computation pattern.
+
+## 2026-07-20 - Change visualization clip quantile to 98%
+- Context: User requested a slightly tighter clip for training and inference visualizations to reduce the influence of extreme outliers on the color scale.
+- Change:
+  - Changed `_symmetric_clip` default `q` from `0.99` to `0.98` in `utils/visualization.py`.
+  - Changed run-level `vmax` quantile from `0.995` to `0.98` in `scripts/interpolation/inference_interpolation.py`, `scripts/random_noise_suppression/inference_denoise_unet.py`, `inference_denoise_res_unet.py`, `inference_denoise_SCRN.py`, `inference_denoise_dncnn.py`, and `inference_denoise_atten_unet.py`.
+  - Updated the Chinese usage doc (`使用说明.md`) to reference the new `0.98` quantile.
+- Impact: All visualization PNGs now clip at the 98th percentile of absolute amplitudes, making moderate-amplitude features more visible while still excluding the top 2% outliers. Older figures generated with 99% / 99.5% clips will use a slightly wider color range.
+- Follow-up: If demand arises, expose the clip quantile in YAML configs so users can tune it per experiment.
 
 ## 2026-05-06 - Shot-level (FFID) train/val/test splitting
 - Context: The existing `build_loaders` performed a patch-level random split, which could place patches from the same shot gather into both train and test sets, causing data leakage. The user requested splitting by unique FFID (shot number) in sequential order before patchifying, with configurable counts per split.
@@ -699,6 +743,26 @@
   - Added detailed comments for the `inference.binned_metrics` block: master switch, EB-WSE bins/smooth_sigma, and FB-FRE `rel_threshold`, `band_ratios`, `band_names`, `taper_width`.
 - Impact: Users can now understand and tune the configs without reading the source code.
 - Follow-up: Keep comments updated when defaults or config schema change.
+
+## 2026-07-10 - Extend tutorial with YAML walkthrough, training, inference, and batch sweeps
+- Context: The tutorial ended at Chapter 4.2 and did not document the full random-noise suppression YAML, training/inference CLI details, or batch sweep scripts.
+- Change:
+  - Appended sections 4.3 (YAML config walkthrough), 4.4 (training in detail), 4.5 (inference and evaluation), and 4.6 (batch sweeps) to `docs/tutorial.md`.
+  - Covered all config blocks (`experiment`, `data`, `preprocess`, `model`, `loss`, `metrics`, `optim`, `scheduler`, `train`, `log`, `inference`), including the EB-WSE/FB-FRE `binned_metrics` block.
+  - Documented the single-GPU and multi-GPU `torchrun` commands, output directory structure, log files, and the current state of resume support.
+  - Documented inference CLI overrides, the step-by-step inference flow, metric groups (`noisy`, `denoised`, `delta`), and the binned-metric JSON output.
+  - Documented `train_denoise_unet.sh`, `inference_denoise_unet.sh`, and `run_all_random_noise_models.sh`, including the default sweep grid (`gaussian`/`poisson`, SNRs `-5`/`0`/`5` dB, seeds `42`/`43`/`44`).
+- Impact: Users can now follow the tutorial end-to-end without reading every source file or shell script.
+- Follow-up: Add a `--resume` flag to `train_denoise_unet.py` if automatic checkpoint resumption becomes a requirement.
+
+## 2026-07-11 - Add Chinese translation of tutorial
+- Context: User requested a Chinese version of the tutorial document alongside the English original.
+- Change:
+  - Added `docs/tutorial_cn.md` — full Chinese translation of `docs/tutorial.md`.
+  - Preserved all headings, code blocks, file paths, CLI flags, and tables; translated only the prose and explanatory comments inside code blocks.
+  - Updated the Chinese table of contents to match the translated section headings and added anchor IDs so internal links remain functional.
+- Impact: Chinese-speaking users can follow the tutorial in their own language without switching between languages.
+- Follow-up: Keep `docs/tutorial_cn.md` in sync with future updates to `docs/tutorial.md`.
 
 ## 2026-07-14 - Paper-aligned loss functions & training hyperparameters for 5 interpolation models
 

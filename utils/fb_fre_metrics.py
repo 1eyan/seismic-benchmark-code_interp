@@ -229,7 +229,7 @@ def frequency_binned_fidelity_metrics(
     dt: float,
     bands: Sequence[Tuple[str, Tuple[float, float]]] | str | None = None,
     axis: int = -1,
-    taper_width: float = 0.0,
+    taper_width: float = 2.0,
     rel_threshold: float = 0.001,
     eps: float = 1e-8,
 ) -> Dict[str, Dict[str, Any]]:
@@ -245,7 +245,9 @@ def frequency_binned_fidelity_metrics(
             and splits it into low/mid/high/very_high bins using
             ``_DEFAULT_BAND_RATIOS``.
     axis : time axis along which FFT is performed. Default ``-1``.
-    taper_width : cosine taper width in Hz at band edges. ``0.0`` = rectangular.
+    taper_width : cosine taper width in Hz at band edges. ``0.0`` = rectangular
+        passband, which causes Gibbs ringing in the time domain. A positive
+        value (default ``2.0`` Hz) suppresses ringing by smoothing the cutoff.
     rel_threshold : relative power threshold used when ``bands`` is ``"auto"``.
     eps : small constant to avoid division by zero.
 

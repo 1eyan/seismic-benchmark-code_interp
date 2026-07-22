@@ -43,7 +43,7 @@ def _squeeze_to_2d(x: ArrayLike, name: str) -> np.ndarray:
     return arr
 
 
-def _symmetric_clip(arr: np.ndarray, q: float = 0.99) -> float:
+def _symmetric_clip(arr: np.ndarray, q: float = 0.98) -> float:
     finite = arr[np.isfinite(arr)]
     if finite.size == 0:
         return 1.0
