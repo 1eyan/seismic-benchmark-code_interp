@@ -17,7 +17,7 @@ experiment:
   name: interp_li2022_caunet_seg_c3_paper
   output_dir: results
   seed: 42
-  device: cuda
+  device: cuda:1
 
 data:
   segy:
@@ -26,21 +26,24 @@ data:
     time_downsample: 1
   test_ratio: 0.1
   loader:
-    batch_size: 32          # paper-inferred (same task/domain as ANet)
+    batch_size: 144         # paper-inferred (same task/domain as ANet)
     num_workers: 4
     pin_memory: true
 
 preprocess:
-  mask_mode: continuous     # single contiguous block of whole traces
-  mask_ratio_range: [0.1, 0.3]  # paper-inferred (matching ANet baseline; Li et al. range paywalled)
+  mask_mode: continuous
+  mask_ratio: 0.1
   dt: 0.002
   t0: 0.0
   spherical_power: 1.2
-  normalize_mode: minmax    # paper-inferred (Li et al. details paywalled)
-  normalize_scope: global   # repository-adaptation
-  patch_time: 128           # paper-inferred (matching ANet)
+  uniform_stride: 2
+  normalize_mode: max_abs
+  normalize_scope: global
+  patch_normalize: true
+  patch_norm_eps: 1.0e-6
+  patch_time: 256
   patch_trace: 128
-  patch_overlap: 0.5        # repository-adaptation
+  patch_overlap: 0.5
   max_shots: null
 
 model:
@@ -81,7 +84,7 @@ scheduler:
   params: {}
 
 train:
-  epochs: 20                # paper-inferred (same domain as ANet)
+  epochs: 50                # paper-inferred (same domain as ANet)
   grad_clip: null
   log_step: false
   log_interval: 20
