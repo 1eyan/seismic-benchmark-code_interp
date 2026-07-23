@@ -53,8 +53,8 @@ set -euo pipefail
 # User configuration
 # ==============================================================================
 
-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2,3}"
-NPROC_PER_NODE="${NPROC_PER_NODE:-2}"
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 MASTER_PORT="${MASTER_PORT:-auto}"
 TORCHRUN_EXTRA="${TORCHRUN_EXTRA:-}"
 
@@ -80,14 +80,12 @@ INFER_PY=""
 EXPERIMENTS=(
   "random:0.3"
   "random:0.5"
-  "random:0.7"
   "uniform:0.3"
   "uniform:0.5"
   "continuous:20tr"
   "continuous:30tr"
   "continuous:40tr"
 )
-
 N_SEEDS=3
 START_SEED=42
 
