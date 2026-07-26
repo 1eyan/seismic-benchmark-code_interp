@@ -48,8 +48,8 @@ MASTER_PORT="${MASTER_PORT:-auto}"
 TORCHRUN_EXTRA="${TORCHRUN_EXTRA:-}"
 
 #BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/chai2020_unet_paper.yaml}"
-BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/li2022_caunet_seg_c3_paper.yaml}"
-#BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/guo2023_mst_paper.yaml}"
+#BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/li2022_caunet_seg_c3_paper.yaml}"
+BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/guo2023_mst_paper.yaml}"
 TRAIN_PY="${TRAIN_PY:-scripts/interpolation/train_interpolation_unet.py}"
 INFER_PY="${INFER_PY:-scripts/interpolation/inference_interpolation.py}"
 
@@ -60,10 +60,10 @@ INFER_PY="${INFER_PY:-scripts/interpolation/inference_interpolation.py}"
 #
 # Fixed trace count is only meaningful for continuous missing traces.
 EXPERIMENTS=(
-  "random:0.3"
+  #"random:0.3"
   "random:0.5"
-  "uniform:0.3"
   "uniform:0.5"
+  "uniform:0.7"
   "continuous:20tr"
   "continuous:30tr"
   "continuous:40tr"
@@ -335,6 +335,11 @@ for spec in "${EXPERIMENTS[@]}"; do
         --output-dir "${infer_out_extra}" \
         "${extra_args_array[@]}" \
         --device "${INFER_DEVICE}"
+    fi
+
+    if [[ "${CLEANUP_EPOCH_CKPTS:-true}" == "true" ]]; then
+      find "${ckpt_dir}" -name "epoch_*.pt" -type f -delete 2>/dev/null || true
+      log "Cleaned up epoch checkpoints in ${ckpt_dir}, kept best.pt only."
     fi
 
     log "Done: ${run_name_full}"

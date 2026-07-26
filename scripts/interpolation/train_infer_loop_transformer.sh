@@ -78,10 +78,10 @@ INFER_PY=""
 #
 # Fixed trace count is only meaningful for continuous missing traces.
 EXPERIMENTS=(
-  "random:0.3"
+  #"random:0.3"
   "random:0.5"
-  "uniform:0.3"
   "uniform:0.5"
+  "uniform:0.7"
   "continuous:20tr"
   "continuous:30tr"
   "continuous:40tr"
@@ -377,6 +377,11 @@ for spec in "${EXPERIMENTS[@]}"; do
         --output-dir "${infer_out_extra}" \
         "${extra_args_array[@]}" \
         --device "${INFER_DEVICE}"
+    fi
+
+    if [[ "${CLEANUP_EPOCH_CKPTS:-true}" == "true" ]]; then
+      find "${ckpt_dir}" -name "epoch_*.pt" -type f -delete 2>/dev/null || true
+      log "Cleaned up epoch checkpoints in ${ckpt_dir}, kept best.pt only."
     fi
 
     log "Done: ${run_name_full}"
