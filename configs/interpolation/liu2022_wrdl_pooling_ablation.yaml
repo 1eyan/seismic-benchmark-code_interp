@@ -1,0 +1,91 @@
+# ---------------------------------------------------------------------------
+# Liu et al. 2022 — WRDL pooling ablation (MaxPool U-Net baseline)
+#
+# Standard U-Net with MaxPool instead of DWT/IWT, keeping comparable channel
+# counts.  The DWT quadruples channels at each downsampling step, so a
+# MaxPool U-Net with the same encoder channel progression is NOT parameter-
+# matched.  This config uses a standard UNet with doubled base channels as a
+# rough parameter-count match for the WRDL conservative profile.
+#
+# All other settings (loss, optimizer, data) match the conservative WRDL
+# config for a controlled comparison.
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: interp_liu2022_wrdl_pooling_ablation
+  output_dir: results
+  seed: 42
+  device: cuda
+
+data:
+  segy:
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
+    traces_per_shot: 201
+    time_downsample: 1
+  test_ratio: 0.1
+  loader:
+    batch_size: 4
+    num_workers: 4
+    pin_memory: true
+
+preprocess:
+  mask_mode: continuous
+  mask_ratio: 0.2
+  dt: 0.002
+  t0: 0.0
+  spherical_power: 1.2
+  normalize_mode: max_abs
+  normalize_scope: global
+  patch_time: 128
+  patch_trace: 128
+  patch_overlap: 0.5
+  max_shots: null
+  skip: []
+
+model:
+  type: unet                   # Standard U-Net — MaxPool baseline for WRDL ablation
+  params:
+    in_channels: 1
+    out_channels: 1
+    base_channels: 64          # doubled from standard 32 (parameter-count match)
+    depth: 4                   # 4 downsampling levels
+
+loss:
+  type: wrdl_ssim_huber        # same hybrid loss as WRDL for controlled comparison
+  params:
+    ssim_weight: 1.0
+    huber_weight: 1.0
+    huber_delta: 1.0
+    window_size: 11
+    window_sigma: 1.5
+    data_range: 2.0
+
+metrics:
+  - name: snr
+    params: { reduction: per_sample }
+  - name: ssim
+    params: { data_range: 2.0, window_size: 11, sigma: 1.5 }
+  - name: mae
+    params: {}
+
+optim:
+  type: adam
+  params:
+    lr: 1.0e-3
+
+scheduler:
+  type: cosine
+  params:
+    min_lr: 1.0e-6
+
+train:
+  epochs: 100
+  eval_interval: 2
+  ckpt_interval: 10
+  vis_interval: 10
+  log_interval: 20
+  log_step: false
+
+log:
+  log_dir: logs
+  plot_interval: 5

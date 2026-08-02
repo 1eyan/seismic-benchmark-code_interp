@@ -978,3 +978,44 @@
   files on the training server. Set the SEG-Y paths in configs before
   running. The author-code vs paper-formula PConv normalization difference
   should be quantified via the ablation config once training completes.
+
+## 2026-08-02 - Add Liu2022 WRDL reproduction (Wavelet-Based Residual Deep Learning)
+
+- Context: Reproduce Liu et al., "Seismic Data Reconstruction via Wavelet-Based
+  Residual Deep Learning" (IEEE TGRS, vol. 60, 2022, DOI
+  10.1109/TGRS.2022.3152984). WRDL = U-Net backbone + DWT replacing pooling +
+  IWT with expansion convolution for upsampling + bottleneck residual blocks +
+  SSIM+Huber hybrid loss. Paper PDF behind IEEE paywall; no author code found.
+  Conservative reproduction with Haar wavelet and 32-512 channel progression.
+- Change:
+  - `model/interpolation/liu2022_wrdl.py` (new, ~340 lines) —
+    `FixedWaveletDWT2D` (grouped conv2d stride-2), `FixedWaveletIWT2D` (grouped
+    conv_transpose2d stride-2), `WRDLBottleneckResidualBlock` (1x1→3x3→1x1),
+    `WaveletExpansionIWTBlock` (expansion conv + IWT), `WRDLEncoderStage`
+    (2×Conv + DWT), `WRDLDecoderStage` (concat skip + 2×Conv),
+    `Liu2022WRDL` (@register_model "liu2022_wrdl": 5 encoder levels
+    ch=[32,64,128,256,512], Haar wavelet, 2 bottleneck residual blocks,
+    odd-size reflect-pad support).
+  - `utils/losses.py` — added `WRDLSSIMHuberLoss` (@register_loss
+    "wrdl_ssim_huber": L = ssim_weight×(1-SSIM) + huber_weight×Huber,
+    local Gaussian-window SSIM, standard piecewise Huber).
+  - `model/interpolation/__init__.py` — added `from . import liu2022_wrdl`.
+  - 6 configs: `liu2022_wrdl_conservative.yaml`, `liu2022_wrdl_smoke.yaml`,
+    `liu2022_wrdl_pooling_ablation.yaml`, `liu2022_wrdl_no_residual_ablation.yaml`,
+    `liu2022_wrdl_ssim_ablation.yaml`, `liu2022_wrdl_huber_ablation.yaml`.
+  - 6 test files: `test_wrdl_wavelet.py` (PR, subband direction, filter frozen),
+    `test_wrdl_architecture.py` (registration, shapes, components),
+    `test_wrdl_residual.py` (bottleneck structure, gradient flow),
+    `test_wrdl_loss.py` (Huber piecewise, SSIM, hybrid weights),
+    `test_wrdl_training.py` (fwd/bwd, overfit, serialization),
+    `test_wrdl_configs.py` (6 configs load, model/loss build).
+  - `model/interpolation/liu2022_wrdl_notes.md` — full architecture doc with
+    parameter classification table.
+- Impact: New model available via `build_model({"type": "liu2022_wrdl", ...})`.
+  No changes to existing models, trainer, or dataset. Trainer already supports
+  signature inspection (from Pan2020); WRDL does not accept mask kwarg so the
+  trainer falls back to `model(x)`.
+- Status: CONSERVATIVE — all hyperparameters marked reproduction-assumption
+  pending paper PDF audit. Do NOT rename conservative config to paper.yaml
+  until wavelet basis, channel counts, residual block count, Huber delta, loss
+  weights, and training hyperparameters are verified from the paper.

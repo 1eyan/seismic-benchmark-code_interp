@@ -524,6 +524,144 @@ class Pan2020PConvLoss(BaseLoss):
         return loss_valid + self.hole_weight * loss_hole + self.tv_weight * loss_tv
 
 
+# ----------------------------------------------------------------------
+# WRDL SSIM + Huber hybrid loss
+# ----------------------------------------------------------------------
+
+
+def _gaussian_window_1d(size: int, sigma: float) -> torch.Tensor:
+    """1D Gaussian window, normalised to sum to 1."""
+    coords = torch.arange(size, dtype=torch.float32)
+    half = (size - 1) / 2.0
+    g = torch.exp(-((coords - half) ** 2) / (2.0 * sigma * sigma))
+    return g / g.sum()
+
+
+def _create_gaussian_window(window_size: int, sigma: float, channels: int) -> torch.Tensor:
+    """2D Gaussian window ``(channels, 1, window_size, window_size)``."""
+    w1d = _gaussian_window_1d(window_size, sigma)
+    w2d = torch.outer(w1d, w1d)  # (WS, WS)
+    w2d = w2d.unsqueeze(0).unsqueeze(0)  # (1, 1, WS, WS)
+    return w2d.expand(channels, 1, window_size, window_size)
+
+
+@register_loss("wrdl_ssim_huber")
+class WRDLSSIMHuberLoss(BaseLoss):
+    """WRDL hybrid loss: ``ssim_weight * (1 - SSIM) + huber_weight * Huber``.
+
+    SSIM uses a local Gaussian window (not global-patch), matching the WRDL
+    paper's structural similarity formulation.  Huber uses the standard
+    piecewise definition with configurable delta.
+
+    All terms and the total loss are scalar tensors suitable for backprop.
+
+    Parameters
+    ----------
+    ssim_weight : weight of the SSIM term. Default 1.0.
+    huber_weight : weight of the Huber term. Default 1.0.
+    huber_delta : Huber transition threshold. Default 1.0.
+    window_size : Gaussian window size for local SSIM. Default 11.
+    window_sigma : Gaussian sigma for SSIM window. Default 1.5.
+    data_range : data value range for SSIM C1/C2 computation. Default 2.0
+        (for [-1, 1] normalised data).
+    c1_factor : C1 = (c1_factor * data_range)^2. Default 0.01.
+    c2_factor : C2 = (c2_factor * data_range)^2. Default 0.03.
+    """
+
+    def __init__(
+        self,
+        ssim_weight: float = 1.0,
+        huber_weight: float = 1.0,
+        huber_delta: float = 1.0,
+        window_size: int = 11,
+        window_sigma: float = 1.5,
+        data_range: float = 2.0,
+        c1_factor: float = 0.01,
+        c2_factor: float = 0.03,
+    ) -> None:
+        super().__init__()
+        if ssim_weight < 0 or huber_weight < 0:
+            raise ValueError("Loss weights must be non-negative.")
+        if huber_delta <= 0:
+            raise ValueError(f"huber_delta must be positive, got {huber_delta}.")
+        if window_size < 3 or window_size % 2 == 0:
+            raise ValueError(
+                f"window_size must be an odd integer >= 3, got {window_size}."
+            )
+
+        self.ssim_weight = float(ssim_weight)
+        self.huber_weight = float(huber_weight)
+        self.huber_delta = float(huber_delta)
+        self.window_size = int(window_size)
+        self.window_sigma = float(window_sigma)
+        self.data_range = float(data_range)
+        self.c1 = (c1_factor * data_range) ** 2
+        self.c2 = (c2_factor * data_range) ** 2
+
+    def _local_ssim(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Per-channel local-window SSIM; returns scalar mean across batch and space."""
+        C = pred.shape[1]
+        window = _create_gaussian_window(
+            self.window_size, self.window_sigma, C
+        ).to(device=pred.device, dtype=pred.dtype)
+        pad = self.window_size // 2
+
+        # Local means
+        mu_p = F.conv2d(pred, window, padding=pad, groups=C)
+        mu_t = F.conv2d(target, window, padding=pad, groups=C)
+
+        mu_p_sq = mu_p.square()
+        mu_t_sq = mu_t.square()
+        mu_pt = mu_p * mu_t
+
+        # Local variances and covariance
+        sigma_p_sq = F.conv2d(pred.square(), window, padding=pad, groups=C) - mu_p_sq
+        sigma_t_sq = F.conv2d(target.square(), window, padding=pad, groups=C) - mu_t_sq
+        sigma_pt = F.conv2d(pred * target, window, padding=pad, groups=C) - mu_pt
+
+        # SSIM map
+        numerator = (2.0 * mu_pt + self.c1) * (2.0 * sigma_pt + self.c2)
+        denominator = (mu_p_sq + mu_t_sq + self.c1) * (sigma_p_sq + sigma_t_sq + self.c2)
+        ssim_map = numerator / (denominator + 1e-8)
+
+        return ssim_map.mean()
+
+    def _huber(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Standard Huber loss, mean reduction."""
+        diff = pred - target
+        abs_diff = diff.abs()
+        quadratic = 0.5 * diff.square()
+        linear = self.huber_delta * (abs_diff - 0.5 * self.huber_delta)
+        mask = abs_diff <= self.huber_delta
+        loss = torch.where(mask, quadratic, linear)
+        return loss.mean()
+
+    def components(
+        self, pred: torch.Tensor, target: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        """Return ``loss_total`` / ``loss_ssim`` / ``loss_huber`` / ``ssim`` tensors."""
+        ssim_val = self._local_ssim(pred, target)
+        loss_ssim = 1.0 - ssim_val
+        loss_huber = self._huber(pred, target)
+        loss_total = self.ssim_weight * loss_ssim + self.huber_weight * loss_huber
+        return {
+            "loss_total": loss_total,
+            "loss_ssim": loss_ssim,
+            "loss_huber": loss_huber,
+            "ssim": ssim_val,
+        }
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: Optional[torch.Tensor] = None,
+        **extras: Any,
+    ) -> torch.Tensor:
+        if target is None:
+            raise ValueError("WRDLSSIMHuberLoss requires `target`.")
+        return self.components(pred, target)["loss_total"]
+
+
 def build_loss(cfg: Dict[str, Any]) -> BaseLoss:
     """Instantiate a loss from a ``{type, params}`` config block."""
     name = cfg["type"]
