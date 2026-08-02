@@ -428,6 +428,102 @@ class ANetSSIML1Loss(BaseLoss):
 LOSS_REGISTRY["ssim_l1"] = ANetSSIML1Loss
 
 
+# ----------------------------------------------------------------------
+# Pan2020 partial convolution composite loss
+# ----------------------------------------------------------------------
+
+
+@register_loss("pan2020_pconv_composite")
+class Pan2020PConvLoss(BaseLoss):
+    """Pan2020 composite loss: L_valid + hole_weight * L_hole + tv_weight * L_tv.
+
+    All three terms use per-sample spatial SUM then batch MEAN reduction,
+    matching the author-code convention (paper: Computers & Geosciences,
+    vol. 145, 2020, DOI 10.1016/j.cageo.2020.104609).
+
+    L_valid : L1 error on observed positions only (mask == 1).
+    L_hole  : L1 error on missing positions only (mask == 0).
+    L_tv    : total-variation on the hole-neighbourhood composite image,
+              i.e. the reconstruction where observed pixels use the
+              ground-truth target and missing pixels use the network
+              prediction.  The hole mask is first dilated so the TV
+              regulariser also penalises discontinuities along the
+              hole boundary.
+
+    Parameters
+    ----------
+    hole_weight : weight of the hole L1 term (paper: 6.0).
+    tv_weight   : weight of the TV term (paper: 0.1).
+    tv_dilation : kernel size for hole-mask dilation (paper: 7).
+    """
+
+    def __init__(
+        self,
+        hole_weight: float = 6.0,
+        tv_weight: float = 0.1,
+        tv_dilation: int = 7,
+    ) -> None:
+        super().__init__()
+        if hole_weight < 0:
+            raise ValueError(f"hole_weight must be non-negative, got {hole_weight}.")
+        if tv_weight < 0:
+            raise ValueError(f"tv_weight must be non-negative, got {tv_weight}.")
+        if tv_dilation < 1 or tv_dilation % 2 == 0:
+            raise ValueError(f"tv_dilation must be a positive odd integer, got {tv_dilation}.")
+        self.hole_weight = float(hole_weight)
+        self.tv_weight = float(tv_weight)
+        self.tv_dilation = int(tv_dilation)
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: Optional[torch.Tensor] = None,
+        **extras: Any,
+    ) -> torch.Tensor:
+        if target is None:
+            raise ValueError("Pan2020PConvLoss requires `target`.")
+        mask = extras.get("mask")
+        if mask is None:
+            raise ValueError("Pan2020PConvLoss requires extras['mask'] (1=observed, 0=missing).")
+        if not isinstance(mask, torch.Tensor):
+            mask = torch.as_tensor(mask, device=pred.device, dtype=pred.dtype)
+        if mask.shape != pred.shape:
+            mask = mask.reshape(pred.shape)
+        mask = mask.to(device=pred.device, dtype=pred.dtype)
+
+        hole_mask = 1.0 - mask
+
+        abs_err = (pred - target).abs()
+
+        # L_valid: per-sample spatial sum, then batch mean
+        loss_valid = (abs_err * mask).sum(dim=(1, 2, 3)).mean()
+
+        # L_hole: per-sample spatial sum, then batch mean
+        loss_hole = (abs_err * hole_mask).sum(dim=(1, 2, 3)).mean()
+
+        # TV on hole-neighbourhood composite
+        if self.tv_weight > 0:
+            composite = mask * target + hole_mask * pred
+            # Dilate hole mask to capture boundary
+            d = self.tv_dilation
+            dilated = torch.nn.functional.max_pool2d(
+                hole_mask, kernel_size=d, stride=1, padding=d // 2,
+            )
+            dilated = (dilated > 0).to(dtype=pred.dtype)
+
+            diff_h = (composite[:, :, 1:, :] - composite[:, :, :-1, :]).abs()
+            diff_w = (composite[:, :, :, 1:] - composite[:, :, :, :-1]).abs()
+
+            # Align dilated mask with diff grids
+            tv_h = (diff_h * dilated[:, :, 1:, :]).sum(dim=(1, 2, 3)).mean()
+            tv_w = (diff_w * dilated[:, :, :, 1:]).sum(dim=(1, 2, 3)).mean()
+            loss_tv = tv_h + tv_w
+        else:
+            loss_tv = pred.new_tensor(0.0)
+
+        return loss_valid + self.hole_weight * loss_hole + self.tv_weight * loss_tv
+
+
 def build_loss(cfg: Dict[str, Any]) -> BaseLoss:
     """Instantiate a loss from a ``{type, params}`` config block."""
     name = cfg["type"]

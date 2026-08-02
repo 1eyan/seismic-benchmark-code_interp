@@ -912,3 +912,69 @@
   loss formula, and training hyperparameters, then upgrade the corresponding
   paper-inferred entries. Set the field SEG-Y path in the field config before
   running it.
+
+## 2026-07-21 - Add Pan2020 PConv U-Net reproduction (Partial Convolution Network)
+
+- Context: Reproduce Pan et al., "A Partial Convolution-Based Deep-Learning
+  Network for Seismic Data Regularization" (Computers & Geosciences, vol. 145,
+  2020, DOI 10.1016/j.cageo.2020.104609). Author code is publicly available at
+  https://github.com/shulinpan/seismic-data-regularization. Critical finding:
+  author code uses GLOBAL mask-mean PConv normalization (1/mean(mask)), NOT the
+  local per-window formula in paper Eq. 6. Default follows author code;
+  paper formula available via ablation config.
+- Change:
+  - `model/interpolation/pan2020_pconv_unet.py` (new, ~570 lines) —
+    `_same_pad_size()` / `_pad_same()` for Keras-compatible same-padding,
+    `Pan2020PartialConv2d` (global mask-mean + local valid-ratio modes,
+    fixed all-ones mask_kernel buffer, mask update via conv2d > 0 binarize),
+    `Pan2020EncoderStage` (stride-2 PConv + optional BN + ReLU),
+    `Pan2020DecoderStage` (stride-1 PConv + optional BN + LeakyReLU 0.2),
+    `Pan2020PConvUNet` (@register_model "pan2020_pconv_unet": 6 encoders
+    k=[7,5,5,3,3,3] ch=[32,64,128,256,512,512], 6 decoders k=3
+    ch=[512,256,128,64,32,1], data+mask skip connections, separate/packed
+    input modes, sigmoid/none output).
+  - `utils/losses.py` — added `Pan2020PConvLoss` (@register_loss
+    "pan2020_pconv_composite": L_valid + 6*L_hole + 0.1*L_tv, per-sample
+    spatial sum + batch mean, TV on dilated hole-neighbourhood composite).
+  - `utils/train_utils.py` — added `import inspect`; modified `train_one_epoch`
+    and `evaluate` to use `inspect.signature(unwrap_ddp(model).forward)` to
+    check for "mask" parameter and forward `**extras` to model when accepted.
+    Backward-compatible: models without "mask" in their forward signature are
+    called as `model(x)` only.
+  - `scripts/interpolation/train_interpolation_unet.py` — added
+    `pan2020_random` mask mode in `_patchify_pairs`: random whole-trace
+    masking WITH replacement (1 to 0.5*n_traces observed), returning
+    (masked_input, full_target, observed_mask) triplet.
+  - `model/interpolation/__init__.py` — added `from . import
+    pan2020_pconv_unet`.
+  - Configs (new): `pan2020_pconv_author_code.yaml` (Adam 2e-4, batch 4,
+    128x128, [0,1] minmax, global mask-mean, 100 epochs),
+    `pan2020_pconv_finetune.yaml` (lr 5e-5, resume from author-code),
+    `pan2020_pconv_smoke.yaml` (2 epochs, tiny model, max_shots=1),
+    `pan2020_standard_local_pconv_ablation.yaml` (paper Eq. 6 local
+    valid-ratio mode). All configs carry `paper_alignment` audit blocks.
+  - Tests (new): `test_pan2020_partial_conv.py` (same-padding, global/local
+    PConv formulas, mask update, degeneracy to ordinary conv, shapes),
+    `test_pan2020_pconv_architecture.py` (registration, stage counts,
+    channel/kernel progression, BN placement, activations, shapes, input
+    modes, partial mask),
+    `test_pan2020_pconv_loss.py` (valid/hole/TV components, weight scaling,
+    TV neighbourhood, batch-mean spatial-sum reduction, validation),
+    `test_pan2020_pconv_training.py` (forward/backward, mask_kernel no grad,
+    one-batch overfit, trainer signature inspection compatibility, input
+    modes),
+    `test_pan2020_pconv_configs.py` (4 configs load, model/loss/optimizer
+    build, hyperparameter audit, paper_alignment format).
+  - `model/interpolation/pan2020_pconv_notes.md` (new) — full reproduction
+    notes with architecture diagram, PConv formula, setting classification
+    table, and verification status.
+- Impact: Pan2020 PConv U-Net is available as `pan2020_pconv_unet` with
+  composite loss `pan2020_pconv_composite`. The trainer now supports
+  mask-forwarding to models via signature inspection — all existing models
+  (Group A without mask, Group B with **kwargs) continue to work unchanged.
+  The training script supports Pan2020-style random-with-replacement trace
+  masking at patch level.
+- Follow-up: Local dev machine has no PyTorch — run the five Pan2020 test
+  files on the training server. Set the SEG-Y paths in configs before
+  running. The author-code vs paper-formula PConv normalization difference
+  should be quantified via the ablation config once training completes.

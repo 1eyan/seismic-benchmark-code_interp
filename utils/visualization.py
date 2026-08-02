@@ -173,6 +173,8 @@ def visualize_random_sample(
     -------
     matplotlib.figure.Figure produced by :func:`plot_sample`.
     """
+    import inspect
+
     dataset = getattr(loader, "dataset", None)
     if dataset is None or not hasattr(dataset, "__len__") or len(dataset) == 0:
         raise ValueError(
@@ -182,10 +184,15 @@ def visualize_random_sample(
     rng = np.random.default_rng(seed)
     idx = int(rng.integers(0, len(dataset)))
     sample = dataset[idx]
-    if isinstance(sample, (tuple, list)) and len(sample) == 2:
+    if isinstance(sample, (tuple, list)) and len(sample) >= 3:
+        input_tensor, target_tensor = sample[0], sample[1]
+        extras_vis: dict = {"mask": sample[2]}
+    elif isinstance(sample, (tuple, list)) and len(sample) == 2:
         input_tensor, target_tensor = sample
+        extras_vis = {}
     else:
         input_tensor, target_tensor = sample, None
+        extras_vis = {}
 
     if not isinstance(input_tensor, torch.Tensor):
         input_tensor = torch.as_tensor(input_tensor)
@@ -195,12 +202,21 @@ def visualize_random_sample(
         if not isinstance(target_tensor, torch.Tensor):
             target_tensor = torch.as_tensor(target_tensor)
         target_batch = target_tensor.unsqueeze(0).to(device)
+    for k in extras_vis:
+        if isinstance(extras_vis[k], torch.Tensor):
+            extras_vis[k] = extras_vis[k].unsqueeze(0).to(device)
 
     was_training = model.training
     model.eval()
     try:
         with torch.no_grad():
-            prediction = model(input_batch)
+            sig = inspect.signature(
+                model.module.forward if hasattr(model, "module") else model.forward
+            )
+            if "mask" in sig.parameters and extras_vis:
+                prediction = model(input_batch, **extras_vis)
+            else:
+                prediction = model(input_batch)
     finally:
         if was_training:
             model.train()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import inspect
 import math
 import os
 import time
@@ -444,7 +445,11 @@ def train_one_epoch(
                 extras[k] = extras[k].to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
-        pred = model(x)
+        sig = inspect.signature(unwrap_ddp(model).forward)
+        if "mask" in sig.parameters:
+            pred = model(x, **extras)
+        else:
+            pred = model(x)
         loss = loss_fn(pred, y, **extras)
         loss.backward()
         if grad_clip and grad_clip > 0:
@@ -522,7 +527,11 @@ def evaluate(
             if isinstance(extras_eval[k], torch.Tensor):
                 extras_eval[k] = extras_eval[k].to(device, non_blocking=True)
 
-        pred = model(x)
+        sig = inspect.signature(unwrap_ddp(model).forward)
+        if "mask" in sig.parameters:
+            pred = model(x, **extras_eval)
+        else:
+            pred = model(x)
         loss = loss_fn(pred, y, **extras_eval)
         total_loss += float(loss.detach().item())
         n_batches += 1

@@ -1,0 +1,117 @@
+# ---------------------------------------------------------------------------
+# Pan et al. 2020 — PConv U-Net ABLATION: standard local valid-ratio PConv
+#
+# Same architecture and training as the author-code profile, but uses the
+# standard image-inpainting PConv normalization (local per-window valid-pixel
+# count, "sum(1)/sum(M)") as described in paper Eq. 6, instead of the
+# author-code global mask-mean normalization (1/mean(mask)).
+#
+# This config exists to quantify the impact of the normalization choice.
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: interp_pan2020_pconv_local_ablation
+  output_dir: results
+  seed: 42
+  device: cuda
+
+data:
+  segy:
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
+    traces_per_shot: 201
+    time_downsample: 1
+  test_ratio: 0.1
+  loader:
+    batch_size: 4
+    num_workers: 4
+    pin_memory: true
+
+preprocess:
+  mask_mode: pan2020_random
+  dt: 0.002
+  t0: 0.0
+  spherical_power: 1.2
+  normalize_mode: minmax
+  normalize_scope: global
+  patch_time: 128
+  patch_trace: 128
+  patch_overlap: 0.5
+  max_shots: null
+  skip: []
+
+model:
+  type: pan2020_pconv_unet
+  params:
+    in_channels: 1
+    out_channels: 1
+    encoder_channels: [32, 64, 128, 256, 512, 512]
+    encoder_kernels: [7, 5, 5, 3, 3, 3]
+    decoder_channels: [512, 256, 128, 64, 32, 1]
+    normalization_mode: standard_local_valid_ratio   # paper Eq. 6 formula
+    upsample_mode: nearest
+    output_activation: sigmoid
+    leaky_relu_slope: 0.2
+    input_mode: separate
+    zero_valid_policy: clamp  # local mode can produce edge cases
+
+loss:
+  type: pan2020_pconv_composite
+  params:
+    hole_weight: 6.0
+    tv_weight: 0.1
+    tv_dilation: 7
+
+metrics:
+  - name: snr
+    params: { reduction: per_sample }
+  - name: ssim
+    params: { data_range: 1.0, window_size: 11, sigma: 1.5 }
+  - name: mae
+    params: {}
+  - name: mse
+    params: {}
+
+optim:
+  type: adam
+  params:
+    lr: 2.0e-4
+
+scheduler:
+  type: none
+  params: {}
+
+train:
+  epochs: 100
+  grad_clip: null
+  log_step: false
+  log_interval: 20
+  eval_interval: 1
+  ckpt_interval: 10
+  vis_interval: 5
+  resume: null
+
+log:
+  log_dir: logs
+  plot_interval: 5
+
+inference:
+  data:
+    segy:
+      path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots10-18.sgy
+      traces_per_shot: 201
+      time_downsample: 1
+  checkpoint: results/interp_pan2020_pconv_local_ablation/checkpoints/best.pt
+  output_dir: results/interp_pan2020_pconv_local_ablation/inference
+  n_viz_shots: 5
+  device: 1
+  batch_size: 4
+  overwrite_observed: false
+
+# ---------------------------------------------------------------------------
+# Paper alignment audit (ablation-specific entries only)
+# ---------------------------------------------------------------------------
+paper_alignment:
+  architecture:
+    pconv_normalization:      { classification: paper-explicit, value: standard_local_valid_ratio, evidence: "Paper Eq. 6: sum(1)/sum(M) per-window local valid-pixel count" }
+  loss:
+    composite_formula:        { classification: paper-explicit, value: "L_valid + 6*L_hole + 0.1*L_tv", evidence: "Same composite loss as author code" }

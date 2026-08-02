@@ -106,7 +106,7 @@ def _preprocess_shots(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.n
     #     masked = shots
 
     mask_mode = str(prep.get("mask_mode", "uniform"))
-    if "mask_traces" not in skip and mask_mode != "continuous":
+    if "mask_traces" not in skip and mask_mode not in ("continuous", "pan2020_random"):
         mask_ratio = float(prep.get("mask_ratio", 0.5))
         mask_kwargs: Dict[str, Any] = {"mode": mask_mode, "ratio": mask_ratio}
         if mask_mode == "uniform":
@@ -208,6 +208,30 @@ def _patchify_pairs(
             )
 
         input_patches = masked_3d[:, None, :, :]
+
+    if mask_mode == "pan2020_random" and "mask_traces" not in set(prep.get("skip", [])):
+        n_patches = target_patches.shape[0]
+        n_patch_traces = target_patches.shape[2]
+        n_patch_time = target_patches.shape[3]
+        mask_rng = np.random.default_rng(int(cfg["experiment"]["seed"]))
+
+        max_obs = max(2, int(0.5 * n_patch_traces))
+        n_obs = mask_rng.integers(1, max_obs + 1, size=n_patches)
+
+        obs_mask = np.zeros((n_patches, 1, n_patch_traces, 1), dtype=np.float32)
+        for i in range(n_patches):
+            draw_idx = mask_rng.choice(n_patch_traces, size=int(n_obs[i]), replace=True)
+            obs_mask[i, 0, draw_idx, 0] = 1.0
+
+        obs_mask_full = np.broadcast_to(
+            obs_mask, (n_patches, 1, n_patch_traces, n_patch_time)
+        ).copy()
+        input_patches = target_patches * obs_mask_full
+        return (
+            input_patches.astype(np.float32),
+            target_patches.astype(np.float32),
+            obs_mask_full.astype(np.float32),
+        )
 
     if bool(prep.get("patch_normalize", False)):
         eps = float(prep.get("patch_norm_eps", 1e-6))

@@ -1,0 +1,158 @@
+# ---------------------------------------------------------------------------
+# Pan et al. 2020 — PConv U-Net author-code profile (synthetic)
+#
+# Paper: "A Partial Convolution-Based Deep-Learning Network for Seismic Data
+#         Regularization", Computers & Geosciences, vol. 145, 2020.
+# DOI:  10.1016/j.cageo.2020.104609
+# Author code: https://github.com/shulinpan/seismic-data-regularization
+#
+# This config follows the **author-code** profile: global mask-mean PConv
+# normalization (NOT the local per-window formula in paper Eq. 6), random
+# whole-trace masking with replacement (1 to 0.5×n_traces observed),
+# composite loss L_valid + 6×L_hole + 0.1×L_tv, and [0,1] min-max
+# normalization before masking.
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: interp_pan2020_pconv_author_code
+  output_dir: results
+  seed: 42
+  device: cuda
+
+data:
+  segy:
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
+    traces_per_shot: 201
+    time_downsample: 1
+  test_ratio: 0.1
+  loader:
+    batch_size: 4             # paper-explicit (author code)
+    num_workers: 4
+    pin_memory: true
+
+preprocess:
+  mask_mode: pan2020_random  # random whole-trace with replacement (author-code)
+  dt: 0.002
+  t0: 0.0
+  spherical_power: 1.2
+  normalize_mode: minmax      # author-code: (x/max(|x|)+1)/2 → [0,1]
+  normalize_scope: global     # global training stats (repository-adaptation)
+  patch_time: 128             # paper-explicit 128×128 patches
+  patch_trace: 128
+  patch_overlap: 0.5          # overlap not specified in paper (repository-adaptation)
+  max_shots: null
+  skip: []                    # apply all preprocessing steps
+
+model:
+  type: pan2020_pconv_unet
+  params:
+    in_channels: 1            # single seismic channel
+    out_channels: 1
+    encoder_channels: [32, 64, 128, 256, 512, 512]   # paper-explicit
+    encoder_kernels: [7, 5, 5, 3, 3, 3]              # paper-explicit
+    decoder_channels: [512, 256, 128, 64, 32, 1]     # reproduction-assumption
+    normalization_mode: author_global_mask_mean       # author-code default
+    upsample_mode: nearest     # reproduction-assumption
+    output_activation: sigmoid # paper-explicit
+    leaky_relu_slope: 0.2     # paper-explicit
+    input_mode: separate       # model(data, mask)
+    zero_valid_policy: error
+
+loss:
+  type: pan2020_pconv_composite
+  params:
+    hole_weight: 6.0          # paper-explicit
+    tv_weight: 0.1            # paper-explicit
+    tv_dilation: 7            # reproduction-assumption
+
+metrics:
+  - name: snr
+    params: { reduction: per_sample }
+  - name: ssim
+    params: { data_range: 1.0, window_size: 11, sigma: 1.5 }
+  - name: mae
+    params: {}
+  - name: mse
+    params: {}
+
+optim:
+  type: adam
+  params:
+    lr: 2.0e-4                # paper-explicit (author code)
+
+scheduler:
+  type: none                  # no scheduler in author code (paper-inferred)
+  params: {}
+
+train:
+  epochs: 100                 # reproduction-assumption
+  grad_clip: null
+  log_step: false
+  log_interval: 20
+  eval_interval: 1
+  ckpt_interval: 10
+  vis_interval: 5
+  resume: null
+
+log:
+  log_dir: logs
+  plot_interval: 5
+
+inference:
+  data:
+    segy:
+      path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots10-18.sgy
+      traces_per_shot: 201
+      time_downsample: 1
+  checkpoint: results/interp_pan2020_pconv_author_code/checkpoints/best.pt
+  output_dir: results/interp_pan2020_pconv_author_code/inference
+  n_viz_shots: 5
+  device: 1
+  batch_size: 4
+  overwrite_observed: false   # paper profile evaluates raw network output
+
+# ---------------------------------------------------------------------------
+# Paper alignment audit
+# ---------------------------------------------------------------------------
+paper_alignment:
+  architecture:
+    encoder_depth:            { classification: paper-explicit, value: 6,            evidence: "Six encoding PConv layers in author code" }
+    decoder_depth:            { classification: paper-explicit, value: 6,            evidence: "Six decoding PConv layers in author code" }
+    encoder_kernels:          { classification: paper-explicit, value: [7,5,5,3,3,3], evidence: "Author code encoder kernel sizes" }
+    encoder_channels:         { classification: paper-explicit, value: [32,64,128,256,512,512], evidence: "Author code encoder channel progression" }
+    decoder_channels:         { classification: reproduction-assumption, value: [512,256,128,64,32,1], evidence: "Mirror of encoder; exact values not listed in paper" }
+    enc1_no_bn:               { classification: paper-explicit, value: true,         evidence: "Author code: encoder 1 has no BatchNorm" }
+    enc_bn:                   { classification: paper-explicit, value: "enc2-6 only", evidence: "Author code BN placement" }
+    dec_bn:                   { classification: paper-explicit, value: "dec7-11 only", evidence: "Author code: last decoder has no BN" }
+    encoder_activation:       { classification: paper-explicit, value: relu,         evidence: "Author code uses ReLU in all encoders" }
+    decoder_activation:       { classification: paper-explicit, value: "LeakyReLU(0.2)", evidence: "Author code decoder activation" }
+    output_activation:        { classification: paper-explicit, value: sigmoid,      evidence: "Author code final Sigmoid" }
+    pconv_normalization:      { classification: author-code, value: global_mask_mean, evidence: "Author code uses 1/mean(mask); paper Eq.6 describes local per-window" }
+    mask_propagation:         { classification: paper-explicit, value: "fixed ones-kernel conv + binarize", evidence: "Paper: mask updated via convolution with all-ones kernel" }
+    skip_connections:         { classification: paper-explicit, value: "data + mask concat", evidence: "Author code: both data and mask concatenated from skip" }
+    same_padding:             { classification: reproduction-assumption, value: true, evidence: "Keras padding='same' equivalent; not explicitly stated" }
+    kernel_size_decoder:      { classification: reproduction-assumption, value: 3,   evidence: "All decoder PConv kernels are 3×3; consistent with author code" }
+    upsample_mode:            { classification: reproduction-assumption, value: nearest, evidence: "Upsampling API not specified; nearest matches author code behavior" }
+  loss:
+    composite_formula:        { classification: paper-explicit, value: "L_valid + 6*L_hole + 0.1*L_tv", evidence: "Paper Eq.; author code loss function" }
+    valid_weight:             { classification: paper-explicit, value: 1.0,          evidence: "Paper loss formula" }
+    hole_weight:              { classification: paper-explicit, value: 6.0,          evidence: "Paper: hole term weight = 6" }
+    tv_weight:                { classification: paper-explicit, value: 0.1,          evidence: "Paper: TV term weight = 0.1" }
+    tv_neighborhood:          { classification: paper-explicit, value: "hole-neighbourhood composite", evidence: "Paper: TV on composite of observed+predicted in hole region" }
+    tv_dilation:              { classification: reproduction-assumption, value: 7,   evidence: "Hole mask dilation kernel size not specified; 7 is common default" }
+    reduction:                { classification: paper-explicit, value: "per-sample spatial sum + batch mean", evidence: "Author code: sum over spatial dims, mean over batch" }
+  training:
+    normalization:            { classification: paper-explicit, value: "[0,1] before masking", evidence: "Author code: (x/max(|x|)+1)/2" }
+    normalization_scope:      { classification: repository-adaptation, value: global, evidence: "Global training stats; scope unresolved in paper" }
+    mask_mode:                { classification: paper-explicit, value: "random traces with replacement", evidence: "Author code: random.sample with replacement, 1 to n_traces/2" }
+    mask_timing:              { classification: repository-adaptation, value: "static per-patch at dataset build", evidence: "Existing pre-computed patch pipeline" }
+    patch_size:               { classification: paper-explicit, value: [128, 128],   evidence: "Paper synthetic experiment patch size" }
+    optimizer:                { classification: paper-explicit, value: adam,         evidence: "Author code: Adam" }
+    lr:                       { classification: paper-explicit, value: 2.0e-4,       evidence: "Author code learning rate" }
+    batch_size:               { classification: paper-explicit, value: 4,            evidence: "Author code batch size" }
+    epochs:                   { classification: reproduction-assumption, value: 100, evidence: "Not explicitly stated; 100 is reasonable for convergence" }
+    scheduler:                { classification: paper-inferred, value: none,         evidence: "No scheduler in author code" }
+    adam_betas:               { classification: unresolved, value: "torch defaults (0.9, 0.999)", evidence: "Not specified in paper or author code" }
+    weight_decay:             { classification: unresolved, value: 0.0,              evidence: "Not specified; torch Adam default" }
+    spherical_divergence:     { classification: repository-adaptation, value: true,  evidence: "Shared preprocessing across benchmark models (fairness)" }
+    dataset:                  { classification: repository-adaptation, value: "SEG C3 45-shot SEG-Y volume", evidence: "Paper uses synthetic SEG C3 data" }

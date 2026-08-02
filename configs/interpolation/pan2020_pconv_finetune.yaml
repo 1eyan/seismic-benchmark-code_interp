@@ -1,0 +1,104 @@
+# ---------------------------------------------------------------------------
+# Pan et al. 2020 — PConv U-Net fine-tune profile
+#
+# Same architecture and loss as the author-code profile, with reduced
+# learning rate (5e-5) for fine-tuning from a pre-trained checkpoint.
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: interp_pan2020_pconv_finetune
+  output_dir: results
+  seed: 42
+  device: cuda
+
+data:
+  segy:
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
+    traces_per_shot: 201
+    time_downsample: 1
+  test_ratio: 0.1
+  loader:
+    batch_size: 4
+    num_workers: 4
+    pin_memory: true
+
+preprocess:
+  mask_mode: pan2020_random
+  dt: 0.002
+  t0: 0.0
+  spherical_power: 1.2
+  normalize_mode: minmax
+  normalize_scope: global
+  patch_time: 128
+  patch_trace: 128
+  patch_overlap: 0.5
+  max_shots: null
+  skip: []
+
+model:
+  type: pan2020_pconv_unet
+  params:
+    in_channels: 1
+    out_channels: 1
+    encoder_channels: [32, 64, 128, 256, 512, 512]
+    encoder_kernels: [7, 5, 5, 3, 3, 3]
+    decoder_channels: [512, 256, 128, 64, 32, 1]
+    normalization_mode: author_global_mask_mean
+    upsample_mode: nearest
+    output_activation: sigmoid
+    leaky_relu_slope: 0.2
+    input_mode: separate
+    zero_valid_policy: error
+
+loss:
+  type: pan2020_pconv_composite
+  params:
+    hole_weight: 6.0
+    tv_weight: 0.1
+    tv_dilation: 7
+
+metrics:
+  - name: snr
+    params: { reduction: per_sample }
+  - name: ssim
+    params: { data_range: 1.0, window_size: 11, sigma: 1.5 }
+  - name: mae
+    params: {}
+  - name: mse
+    params: {}
+
+optim:
+  type: adam
+  params:
+    lr: 5.0e-5                # fine-tune learning rate
+
+scheduler:
+  type: none
+  params: {}
+
+train:
+  epochs: 50                  # fine-tune for fewer epochs
+  grad_clip: null
+  log_step: false
+  log_interval: 20
+  eval_interval: 1
+  ckpt_interval: 5
+  vis_interval: 5
+  resume: results/interp_pan2020_pconv_author_code/checkpoints/best.pt
+
+log:
+  log_dir: logs
+  plot_interval: 5
+
+inference:
+  data:
+    segy:
+      path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots10-18.sgy
+      traces_per_shot: 201
+      time_downsample: 1
+  checkpoint: results/interp_pan2020_pconv_finetune/checkpoints/best.pt
+  output_dir: results/interp_pan2020_pconv_finetune/inference
+  n_viz_shots: 5
+  device: 1
+  batch_size: 4
+  overwrite_observed: false
