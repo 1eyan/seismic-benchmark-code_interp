@@ -247,7 +247,7 @@ def main() -> None:
     stats: Optional[Dict[str, Any]] = None
     norm_mode = str(prep.get("normalize_mode", "max_abs"))
     norm_scope = str(prep.get("normalize_scope", "global"))
-    if "normalize" not in skip:
+    if "normalize" not in skip and not bool(prep.get("patch_normalize", False)):
         shots, stats = normalize(shots, mode=norm_mode, per=norm_scope)
 
     # input = masked traces; target = unmasked (original) traces
@@ -316,20 +316,25 @@ def main() -> None:
     metric_cfg = cfg.get("metrics", [])
     metric_names = [m["name"] for m in metric_cfg]
     # PSNR uses peak amplitude (max_abs), SSIM uses peak-to-peak range (L).
-    if norm_mode == "max_abs":
+    # When only patch_normalize is used (no global norm), stats is None and
+    # the data stays in the original amplitude domain — infer ranges from data.
+    if stats is None:
+        psnr_peak = float(np.max(np.abs(shots_norm)))
+        ssim_data_range = float(np.max(shots_norm) - np.min(shots_norm))
+    elif norm_mode in ("max_abs",):
         psnr_peak = 1.0
         ssim_data_range = 2.0
-    elif norm_mode == "minmax":
+    elif norm_mode in ("minmax", "pan2020_symmetric"):
         psnr_peak = 1.0
         ssim_data_range = 1.0
     else:  # mean_std — unbounded; infer from the actual target volume
         psnr_peak = float(np.max(np.abs(shots_norm)))
         ssim_data_range = float(np.max(shots_norm) - np.min(shots_norm))
-        # Guard against constant-zero / near-constant data
-        if psnr_peak <= 0.0:
-            psnr_peak = 1.0
-        if ssim_data_range <= 0.0:
-            ssim_data_range = 1.0
+    # Guard against constant-zero / near-constant data
+    if psnr_peak <= 0.0:
+        psnr_peak = 1.0
+    if ssim_data_range <= 0.0:
+        ssim_data_range = 1.0
 
     for m in metric_cfg:
         if m["name"] == "psnr" and "data_range" in m.get("params", {}):

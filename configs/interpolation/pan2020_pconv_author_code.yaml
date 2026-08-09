@@ -17,7 +17,7 @@ experiment:
   name: interp_pan2020_pconv_author_code
   output_dir: results
   seed: 42
-  device: cuda
+  device: cuda:1
 
 data:
   segy:
@@ -26,22 +26,26 @@ data:
     time_downsample: 1
   test_ratio: 0.1
   loader:
-    batch_size: 4             # paper-explicit (author code)
+    batch_size: 256         # paper-explicit (author code)
     num_workers: 4
     pin_memory: true
 
 preprocess:
-  mask_mode: pan2020_random  # random whole-trace with replacement (author-code)
+  mask_mode: continuous
+  mask_ratio: 0.1
   dt: 0.002
   t0: 0.0
   spherical_power: 1.2
-  normalize_mode: minmax      # author-code: (x/max(|x|)+1)/2 → [0,1]
-  normalize_scope: global     # global training stats (repository-adaptation)
-  patch_time: 128             # paper-explicit 128×128 patches
+  uniform_stride: 2
+  normalize_mode: pan2020_symmetric
+  normalize_scope: global
+  patch_normalize: false
+  patch_norm_eps: 1.0e-6
+  patch_time: 256
   patch_trace: 128
-  patch_overlap: 0.5          # overlap not specified in paper (repository-adaptation)
+  patch_overlap: 0.5
   max_shots: null
-  skip: []                    # apply all preprocessing steps
+
 
 model:
   type: pan2020_pconv_unet
@@ -108,7 +112,7 @@ inference:
   output_dir: results/interp_pan2020_pconv_author_code/inference
   n_viz_shots: 5
   device: 1
-  batch_size: 4
+  batch_size: 32
   overwrite_observed: false   # paper profile evaluates raw network output
 
 # ---------------------------------------------------------------------------

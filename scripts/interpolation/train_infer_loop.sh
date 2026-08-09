@@ -49,8 +49,8 @@ TORCHRUN_EXTRA="${TORCHRUN_EXTRA:-}"
 
 #BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/chai2020_unet_paper.yaml}"
 #BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/li2022_caunet_seg_c3_paper.yaml}"
-BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/guo2023_mst_paper.yaml}"
-TRAIN_PY="${TRAIN_PY:-scripts/interpolation/train_interpolation_unet.py}"
+BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/pan2020_pconv_author_code.yaml}"
+TRAIN_PY="${TRAIN_PY:-scripts/interpolation/train_interpolation_unet.py}" 
 INFER_PY="${INFER_PY:-scripts/interpolation/inference_interpolation.py}"
 
 # Unified experiment list.
@@ -60,7 +60,7 @@ INFER_PY="${INFER_PY:-scripts/interpolation/inference_interpolation.py}"
 #
 # Fixed trace count is only meaningful for continuous missing traces.
 EXPERIMENTS=(
-  #"random:0.3"
+  "random:0.3"
   "random:0.5"
   "uniform:0.5"
   "uniform:0.7"

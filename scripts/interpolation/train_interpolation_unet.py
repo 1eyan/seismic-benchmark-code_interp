@@ -88,7 +88,7 @@ def _preprocess_shots(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.n
             t0=float(prep.get("t0", 0.0)),
         )
 
-    if "normalize" not in skip:
+    if "normalize" not in skip and not bool(prep.get("patch_normalize", False)):
         shots, _ = normalize(
             shots,
             mode=str(prep.get("normalize_mode", "max_abs")),
@@ -166,6 +166,7 @@ def _patchify_pairs(
     )
 
     mask_mode = str(prep.get("mask_mode", "uniform"))
+    obs_mask: Optional[np.ndarray] = None
 
     if mask_mode == "continuous" and "mask_traces" not in set(prep.get("skip", [])):
         n_patch_traces = target_patches.shape[2]
@@ -208,6 +209,10 @@ def _patchify_pairs(
             )
 
         input_patches = masked_3d[:, None, :, :]
+        obs_mask = np.broadcast_to(
+            trace_mask_3d[:, None, :, None].astype(np.float32),
+            input_patches.shape,
+        ).copy()
 
     if mask_mode == "pan2020_random" and "mask_traces" not in set(prep.get("skip", [])):
         n_patches = target_patches.shape[0]
@@ -246,16 +251,16 @@ def _patchify_pairs(
         input_patches = input_patches / scale
         target_patches = target_patches / scale
 
-    return_mask = bool(prep.get("return_mask", False))
-    if return_mask:
-        # Per-trace observation mask derived from input patches:
-        # after max_abs normalisation + masking, missing traces are
-        # entirely zero.  A trace is "observed" iff its max |amplitude|
-        # exceeds epsilon.
-        obs_mask = (
-            np.abs(input_patches).max(axis=2, keepdims=True) > 1e-8
-        ).astype(np.float32)  # (P, 1, 1, W) — broadcasts over time dim
+    if obs_mask is None:
+        masking_applied = "mask_traces" not in set(prep.get("skip", []))
+        return_mask = bool(prep.get("return_mask", False))
+        if return_mask or (masking_applied and mask_mode in ("random", "uniform")):
+            obs_mask = (
+                np.abs(input_patches).max(axis=3, keepdims=True) > 1e-8
+            ).astype(np.float32)  # (P, 1, n_traces, 1)
+            obs_mask = np.broadcast_to(obs_mask, input_patches.shape).copy()
 
+    if obs_mask is not None:
         return (
             input_patches.astype(np.float32),
             target_patches.astype(np.float32),
@@ -469,12 +474,28 @@ def main() -> None:
             )
 
         if rank == 0 and (epoch + 1) % vis_interval == 0:
+            # Determine colour-scale range from the normalisation mode so the
+            # colour bar matches the actual data distribution.  When no global
+            # or patch normalisation is used the data lives in the raw
+            # amplitude domain and we fall back to symmetric auto-detection.
+            prep = cfg.get("preprocess", {})
+            norm_mode = str(prep.get("normalize_mode", "max_abs"))
+            patch_norm = bool(prep.get("patch_normalize", False))
+            if patch_norm or norm_mode == "max_abs":
+                vis_vmin, vis_vmax = -1.0, 1.0
+            elif norm_mode in ("pan2020_symmetric", "minmax"):
+                vis_vmin, vis_vmax = 0.0, 1.0
+            else:
+                vis_vmin, vis_vmax = None, None  # mean_std / no-norm: auto-detect
+
             visualize_random_sample(
                 model=model,
                 loader=val_loader,
                 save_path=exp_dir / "visualizations" / f"epoch_{epoch:04d}.png",
                 device=device,
                 title=f"Interpolation {model_type} epoch {epoch}",
+                vmin=vis_vmin,
+                vmax=vis_vmax,
                 seed=None,
             )
 

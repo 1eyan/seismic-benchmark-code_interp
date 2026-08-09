@@ -505,13 +505,6 @@ class Pan2020PConvUNet(nn.Module):
         """
         data, current_mask = self._extract_inputs(x, mask)
 
-        # Input mask is (B, 1, H, W) — replicate to match first encoder
-        # output channels for proper mask propagation.
-        if current_mask.shape[1] != self.encoder_stages[0].pconv.out_channels:
-            current_mask = current_mask.expand(
-                -1, self.encoder_stages[0].pconv.out_channels, -1, -1
-            ).contiguous()
-
         # ---- Encoder ----
         enc_data_list: List[torch.Tensor] = []
         enc_mask_list: List[torch.Tensor] = []

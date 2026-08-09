@@ -22,7 +22,7 @@ _EPS: float = 1e-8
 
 NoiseKind = Literal["gaussian", "poisson"]
 MaskMode = Literal["uniform", "random", "continuous"]
-NormMode = Literal["minmax", "max_abs", "mean_std"]
+NormMode = Literal["minmax", "max_abs", "mean_std", "pan2020_symmetric"]
 NormScope = Literal["shot", "trace", "global"]
 
 
@@ -314,9 +314,10 @@ def spherical_divergence_correction(
 # ----------------------------------------------------------------------
 
 _REQUIRED_STATS_KEYS: Dict[str, Tuple[str, ...]] = {
-    "minmax":   ("min", "max"),
-    "max_abs":  ("max_abs",),
-    "mean_std": ("mean", "std"),
+    "minmax":             ("min", "max"),
+    "max_abs":            ("max_abs",),
+    "mean_std":           ("mean", "std"),
+    "pan2020_symmetric":  ("max_abs",),
 }
 
 
@@ -332,7 +333,8 @@ def normalize(
     Parameters
     ----------
     mode            : ``"minmax"`` -> [0, 1]; ``"max_abs"`` -> [-1, 1];
-                      ``"mean_std"`` -> zero mean, unit std.
+                      ``"mean_std"`` -> zero mean, unit std;
+                      ``"pan2020_symmetric"`` -> ``(x/max(|x|)+1)/2`` (Pan et al. 2020).
     clip_percentile : percentile of ``|x|`` used to symmetrically clip the
                       input **before** computing stats; ``None`` disables.
     per             : reduction scope — ``"shot"`` (default), ``"trace"``, or ``"global"``.
@@ -420,6 +422,18 @@ def normalize(
             m = np.abs(x).max(axis=axes, keepdims=True)
         out = x / np.maximum(m, _EPS)
         stats["max_abs"] = np.asarray(m).squeeze()
+    elif mode == "pan2020_symmetric":
+        # Pan et al. 2020: (x / max(|x|) + 1) / 2  →  [0, 1], zero at 0.5.
+        if override_stats is not None:
+            m = np.asarray(override_stats["max_abs"], dtype=x.dtype)
+            if per == "shot":
+                m = m.reshape(-1, 1, 1)
+            elif per == "trace":
+                m = m.reshape(n_shots, n_traces, 1)
+        else:
+            m = np.abs(x).max(axis=axes, keepdims=True)
+        out = (x / np.maximum(m, _EPS) + 1.0) / 2.0
+        stats["max_abs"] = np.asarray(m).squeeze()
     else:  # mean_std
         if override_stats is not None:
             mu = np.asarray(override_stats["mean"], dtype=x.dtype)
@@ -482,6 +496,10 @@ def denormalize(
     elif mode == "max_abs":
         m = np.asarray(stats["max_abs"], dtype=x.dtype).reshape(shape)
         out = x * np.maximum(m, _EPS)
+    elif mode == "pan2020_symmetric":
+        # Inverse of (x/m + 1) / 2:  x = (normalized * 2 - 1) * m
+        m = np.asarray(stats["max_abs"], dtype=x.dtype).reshape(shape)
+        out = (x * 2.0 - 1.0) * np.maximum(m, _EPS)
     else:  # mean_std
         mu = np.asarray(stats["mean"], dtype=x.dtype).reshape(shape)
         sd = np.asarray(stats["std"], dtype=x.dtype).reshape(shape)

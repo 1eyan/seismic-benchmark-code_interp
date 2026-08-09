@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from .metrics import (
@@ -132,7 +134,25 @@ def inference_on_shots(
         mask_channel = (patches_for_net[:, :1, :, :] == 0).astype(np.float32)
         patches_for_net = np.concatenate([patches_for_net, mask_channel], axis=1)
 
-    ds = TensorDataset(torch.from_numpy(patches_for_net))
+    # Derive per-trace observed mask for models that accept a ``mask`` kwarg.
+    obs_mask = (
+        np.abs(patches_for_net[:, :1, :, :]).max(axis=3, keepdims=True) > 1e-8
+    ).astype(np.float32)  # (P, 1, n_traces, 1)
+    obs_mask = np.broadcast_to(obs_mask, patches_for_net[:, :1, :, :].shape).copy()
+
+    # Check whether the model accepts a ``mask`` keyword argument.
+    sig = inspect.signature(
+        model.module.forward if hasattr(model, "module") else model.forward
+    )
+    needs_mask_kwarg = "mask" in sig.parameters
+
+    if needs_mask_kwarg:
+        ds = TensorDataset(
+            torch.from_numpy(patches_for_net),
+            torch.from_numpy(obs_mask),
+        )
+    else:
+        ds = TensorDataset(torch.from_numpy(patches_for_net))
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False, drop_last=False)
 
     was_training = model.training
@@ -141,9 +161,16 @@ def inference_on_shots(
 
     try:
         with torch.no_grad():
-            for (batch,) in loader:
-                batch = batch.to(device, non_blocking=True)
-                out = model(batch)
+            for batch_items in loader:
+                if needs_mask_kwarg:
+                    batch, batch_mask = batch_items
+                    batch = batch.to(device, non_blocking=True)
+                    batch_mask = batch_mask.to(device, non_blocking=True)
+                    out = model(batch, mask=batch_mask)
+                else:
+                    (batch,) = batch_items
+                    batch = batch.to(device, non_blocking=True)
+                    out = model(batch)
                 preds.append(out.cpu())
     finally:
         if was_training:
