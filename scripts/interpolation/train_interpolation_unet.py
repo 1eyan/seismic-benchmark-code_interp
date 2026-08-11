@@ -55,6 +55,7 @@ from utils import (  # noqa: E402
     setup_experiment_dir_distributed,
     train_one_epoch,
     training_device,
+    unwrap_ddp,
     visualize_random_sample,
 )
 
@@ -106,7 +107,11 @@ def _preprocess_shots(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.n
     #     masked = shots
 
     mask_mode = str(prep.get("mask_mode", "uniform"))
-    if "mask_traces" not in skip and mask_mode not in ("continuous", "pan2020_random"):
+    if "mask_traces" not in skip and mask_mode not in (
+        "continuous",
+        "pan2020_random",
+        "cfunet_random",
+    ):
         mask_ratio = float(prep.get("mask_ratio", 0.5))
         mask_kwargs: Dict[str, Any] = {"mode": mask_mode, "ratio": mask_ratio}
         if mask_mode == "uniform":
@@ -214,6 +219,29 @@ def _patchify_pairs(
             input_patches.shape,
         ).copy()
 
+    if mask_mode == "cfunet_random" and "mask_traces" not in set(prep.get("skip", [])):
+        # Paper CFunet protocol: random trace removal of 50%-87.5% per patch
+        # (paper Sec. IV-B).  The missing ratio of each patch is drawn
+        # uniformly from ``preprocess.mask_ratio_range``; a fixed ratio (e.g.
+        # [0.75, 0.75] for the paper's fixed-75% validation) is achieved by
+        # setting low == high.  Falls through to patch normalization like the
+        # continuous branch.
+        patches_3d = target_patches[:, 0, :, :]
+        ratio_range = prep.get("mask_ratio_range") or (0.5, 0.875)
+        mask_rng = np.random.default_rng(int(cfg["experiment"]["seed"]))
+        masked_3d, trace_mask_3d = mask_traces(
+            patches_3d,
+            mode="random",
+            ratio_range=(float(ratio_range[0]), float(ratio_range[1])),
+            rng=mask_rng,
+        )
+        input_patches = masked_3d[:, None, :, :]
+        # CFunet mask semantics (paper Eq. 2): 1 = observed, 0 = missing.
+        obs_mask = np.broadcast_to(
+            (~trace_mask_3d)[:, None, :, None].astype(np.float32),
+            input_patches.shape,
+        ).copy()
+
     if mask_mode == "pan2020_random" and "mask_traces" not in set(prep.get("skip", [])):
         n_patches = target_patches.shape[0]
         n_patch_traces = target_patches.shape[2]
@@ -292,7 +320,7 @@ def parse_args() -> argparse.Namespace:
         "--mask-mode",
         type=str,
         default=None,
-        choices=["uniform", "random", "continuous"],
+        choices=["uniform", "random", "continuous", "cfunet_random"],
         help="Trace masking mode (uses YAML config when omitted).",
     )
     parser.add_argument(
@@ -375,6 +403,8 @@ def main() -> None:
     )
     model_type = str(cfg["model"]["type"])
     loss_fn = build_loss(cfg["loss"]).to(device)
+    if hasattr(loss_fn, "attach_model"):
+        loss_fn.attach_model(unwrap_ddp(model))
     metrics = build_metrics(cfg.get("metrics", []))
     optimizer = build_optimizer(model, cfg["optim"])
     scheduler = build_scheduler(optimizer, cfg["scheduler"], int(cfg["train"]["epochs"]))

@@ -1,0 +1,96 @@
+# ---------------------------------------------------------------------------
+# Park et al. 2022 — CFunet ablation: Fourier loss disabled (alpha = 0)
+#
+# The paper's alpha-sweep baseline (Tables I-II, "MSE" row, alpha = 0).
+# Loss reduces to Eq. 6 only.  Identical to park2022_cfunet_paper.yaml
+# except for alpha.
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: interp_park2022_cfunet_mse
+  output_dir: results
+  seed: 42
+  device: cuda:1
+
+data:
+  segy:
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
+    traces_per_shot: 201
+    time_downsample: 1
+  test_ratio: 0.1
+  loader:
+    batch_size: 32
+    num_workers: 4
+    pin_memory: true
+
+preprocess:
+  mask_mode: cfunet_random
+  mask_ratio_range: [0.5, 0.875]
+  dt: 0.002
+  t0: 0.0
+  spherical_power: 1.2
+  normalize_mode: max_abs
+  normalize_scope: global
+  patch_normalize: true
+  patch_norm_eps: 1.0e-6
+  patch_time: 128
+  patch_trace: 128
+  patch_overlap: 0.5
+  max_shots: null
+
+model:
+  type: park2022_cfunet
+  params:
+    in_channels: 1
+    out_channels: 1
+    base_channels: 22
+    num_levels: 4
+    upsample_mode: fourier_zero_padding
+    upsampler_scale_factor: 2
+    use_fftshift: true
+    fft_norm: backward
+    amplitude_correction: scale
+
+loss:
+  type: cfunet_mse_fourier
+  params:
+    alpha: 0.0             # paper ablation: MSE only (Eq. 6)
+    fft_norm: backward
+
+metrics:
+  - name: snr
+    params: { reduction: per_sample }
+  - name: ssim
+    params: { data_range: 2.0, window_size: 11, sigma: 1.5 }
+  - name: mae
+    params: {}
+  - name: mse
+    params: {}
+
+optim:
+  type: adam
+  params:
+    lr: 5.0e-5
+    betas: [0.9, 0.999]
+    weight_decay: 0.0
+
+scheduler:
+  type: none
+  params: {}
+
+train:
+  epochs: 20
+  eval_interval: 1
+  ckpt_interval: 5
+  vis_interval: 5
+  log_interval: 20
+  log_step: false
+  grad_clip: null
+
+log:
+  log_dir: logs
+  plot_interval: 1
+
+paper_alignment:
+  alpha: paper-explicit ablation (0.0, "MSE" row of Tables I-II)
+  other: identical to park2022_cfunet_paper.yaml paper_alignment block

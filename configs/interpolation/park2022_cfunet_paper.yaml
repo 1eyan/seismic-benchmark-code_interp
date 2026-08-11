@@ -1,0 +1,134 @@
+# ---------------------------------------------------------------------------
+# Park et al. 2022 — CFunet paper-aligned configuration (synthetic profile)
+#
+# Paper: "Coarse-Refine Network With Upsampling Techniques and Fourier Loss
+#         for the Reconstruction of Missing Seismic Data"
+#        IEEE TGRS, vol. 60, 2022, art. 5917615.
+# DOI:  10.1109/TGRS.2022.3190292
+#
+# Paper-explicit (verified from the paper text and figures): coarse/refine
+# U-Nets with channels 22->44->88->176->352, 3x3 convolutions, Fourier
+# zero-padding upsampling x2 in both axes, final 3x3 stride-2 conv (Eq. 5),
+# loss (MSE coarse+final + alpha * Fourier L1) with alpha = 1.0 (synthetic),
+# random trace removal 50%-87.5% per training patch, 128x128 patches,
+# Adam lr = 5e-5, batch size 32, up to 20 epochs.  The in-repo SEGC3 volume
+# stands in for the paper's synthetic modeling experiment (repository
+# adaptation, same convention as the Yu2022 / Li2022 / Chai2020 configs).
+# Unresolved details (FFT norm, amplitude correction, BN, head, data
+# normalization) use documented reproduction-assumptions — see the
+# paper_alignment block below.  Validation here draws the same random
+# missing ratio range as training; use park2022_cfunet_eval75.yaml for the
+# paper's fixed-75% validation protocol.
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: interp_park2022_cfunet_paper
+  output_dir: results
+  seed: 42
+  device: cuda:1
+
+data:
+  segy:
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
+    traces_per_shot: 201
+    time_downsample: 1
+  test_ratio: 0.1
+  loader:
+    batch_size: 32          # paper-explicit
+    num_workers: 4
+    pin_memory: true
+
+preprocess:
+  mask_mode: cfunet_random
+  mask_ratio_range: [0.5, 0.875]   # paper-explicit (train missing ratio)
+  dt: 0.002
+  t0: 0.0
+  spherical_power: 1.2
+  normalize_mode: max_abs
+  normalize_scope: global
+  patch_normalize: true
+  patch_norm_eps: 1.0e-6
+  patch_time: 128          # paper-explicit patch size (synthetic)
+  patch_trace: 128
+  patch_overlap: 0.5
+  max_shots: null
+
+model:
+  type: park2022_cfunet
+  params:
+    in_channels: 1
+    out_channels: 1
+    base_channels: 22      # paper-explicit (22 -> 44 -> 88 -> 176)
+    num_levels: 4          # paper-explicit (bottleneck 352)
+    upsample_mode: fourier_zero_padding   # paper-explicit (Eqs. 3-4)
+    upsampler_scale_factor: 2             # paper-explicit (x2 both axes)
+    use_fftshift: true
+    fft_norm: backward                    # reproduction-assumption
+    amplitude_correction: scale           # reproduction-assumption
+
+loss:
+  type: cfunet_mse_fourier
+  params:
+    alpha: 1.0             # paper-explicit (synthetic, Table I)
+    fft_norm: backward     # reproduction-assumption
+
+metrics:
+  - name: snr
+    params: { reduction: per_sample }
+  - name: ssim
+    params: { data_range: 2.0, window_size: 11, sigma: 1.5 }
+  - name: mae
+    params: {}
+  - name: mse
+    params: {}
+
+optim:
+  type: adam
+  params:
+    lr: 5.0e-5             # paper-explicit (synthetic)
+    betas: [0.9, 0.999]
+    weight_decay: 0.0
+
+scheduler:
+  type: none
+  params: {}
+
+train:
+  epochs: 20               # paper-explicit (up to 20 epochs)
+  eval_interval: 1
+  ckpt_interval: 5
+  vis_interval: 5
+  log_interval: 20
+  log_step: false
+  grad_clip: null
+
+log:
+  log_dir: logs
+  plot_interval: 1
+
+paper_alignment:
+  model_name: paper-explicit (CFunet)
+  coarse_network: paper-explicit (UNet, 22-44-88-176-352)
+  refine_network: paper-explicit (UNet, 22-44-88-176-352)
+  fourier_upsampling: paper-explicit (Eqs. 3-4, x2 both axes)
+  final_stride2_conv: paper-explicit (Eq. 5, 3x3 stride 2)
+  mask_overwrite_eq2: paper-explicit (Eq. 2)
+  mse_loss_coarse_final: paper-explicit (Eq. 6)
+  fourier_l1_loss: paper-explicit (Eq. 8, complex difference)
+  alpha_synthetic: paper-explicit (1.0, Table I)
+  mask_ratio_train: paper-explicit (50%-87.5% random)
+  mask_ratio_validation: paper-explicit (75% fixed; use eval75 config)
+  patch_size: paper-explicit (128x128)
+  optimizer: paper-explicit (Adam)
+  learning_rate: paper-explicit (5e-5 synthetic)
+  batch_size: paper-explicit (32)
+  epochs: paper-explicit (<= 20)
+  fft_norm: reproduction-assumption (torch backward default)
+  amplitude_correction: reproduction-assumption (scale; Eq. 3 has no factor)
+  batch_norm: repository-adaptation (repo UNet uses BN; paper figure unclear)
+  output_head: reproduction-assumption (repo UNet 1x1 conv head)
+  data_normalization: repository-adaptation (max_abs + patch normalize)
+  scheduler: reproduction-assumption (none; paper silent)
+  weight_decay: reproduction-assumption (0.0; paper silent)
+  dataset: repository-adaptation (in-repo SEGC3 stands in for paper synthetic)
+  batch_reduction: reproduction-assumption (per-sample sum + batch mean)

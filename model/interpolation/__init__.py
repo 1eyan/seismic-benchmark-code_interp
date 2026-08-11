@@ -18,6 +18,7 @@ from . import yoon2021_dbilstm  # noqa: F401
 from . import li2022_caunet  # noqa: F401
 from . import liu2022_wrdl  # noqa: F401
 from . import pan2020_pconv_unet  # noqa: F401
+from . import park2022_cfunet  # noqa: F401
 from . import yu2022_anet  # noqa: F401
 from . import yuan2022_btn  # noqa: F401
 from . import guo2023_mst  # noqa: F401

@@ -94,7 +94,7 @@ def estimate_effective_band(
         peak = float(np.max(mean_power))
         threshold = peak * rel_threshold
         valid = freqs[mean_power >= threshold]
-        if valid.size == 0:
+        if valid.size <= 1:
             return float(freqs[0]), float(freqs[-1])
         f_min = float(valid[0])
         f_max = float(valid[-1])
@@ -110,6 +110,8 @@ def estimate_effective_band(
 
     f_min = max(float(freqs[0]), f_min)
     f_max = min(float(freqs[-1]), f_max)
+    if f_max <= f_min:
+        f_min, f_max = float(freqs[0]), float(freqs[-1])
     return f_min, f_max
 
 

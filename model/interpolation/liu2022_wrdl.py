@@ -365,14 +365,19 @@ class Liu2022WRDL(nn.Module):
         )
 
         # ---- Encoder ----
+        # DWT stacks LL/LH/HL/HH subbands, so each stage receives 4x the
+        # previous stage's conv output channels (except the first stage,
+        # which receives stem output directly).
         enc_stages: List[WRDLEncoderStage] = []
         for i in range(num_levels - 1):
-            enc_stages.append(WRDLEncoderStage(enc_chs[i], enc_chs[i + 1], self.dwt))
+            in_ch = enc_chs[i] if i == 0 else 4 * enc_chs[i]
+            enc_stages.append(WRDLEncoderStage(in_ch, enc_chs[i + 1], self.dwt))
         self.encoder_stages = nn.ModuleList(enc_stages)
 
         # ---- Bottleneck ----
+        # Bottleneck receives DWT output from the last encoder stage (4x channels).
         self.bottleneck_conv = nn.Sequential(
-            nn.Conv2d(enc_chs[-1], bottleneck_channels, 3, padding=1, bias=False),
+            nn.Conv2d(4 * enc_chs[-1], bottleneck_channels, 3, padding=1, bias=False),
             nn.BatchNorm2d(bottleneck_channels),
             nn.ReLU(inplace=True),
         )
@@ -390,9 +395,9 @@ class Liu2022WRDL(nn.Module):
         for i in range(num_levels - 1):
             in_ch = dec_chs[i]       # e.g. 512, 256, 128, 64
             out_ch = dec_chs[i + 1]  # e.g. 256, 128, 64,  32
-            expansion_blocks.append(WaveletExpansionIWTBlock(in_ch, out_ch, self.iwt))
-            # After IWT + skip concat: channels = out_ch (IWT) + out_ch (skip)
-            decoder_stages.append(WRDLDecoderStage(2 * out_ch, out_ch))
+            expansion_blocks.append(WaveletExpansionIWTBlock(in_ch, in_ch, self.iwt))
+            # After IWT + skip concat: channels = in_ch (IWT output) + in_ch (skip)
+            decoder_stages.append(WRDLDecoderStage(2 * in_ch, out_ch))
 
         self.expansion_blocks = nn.ModuleList(expansion_blocks)
         self.decoder_stages = nn.ModuleList(decoder_stages)

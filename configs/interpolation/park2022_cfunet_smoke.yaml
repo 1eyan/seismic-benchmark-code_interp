@@ -1,0 +1,86 @@
+# ---------------------------------------------------------------------------
+# Park et al. 2022 — CFunet smoke test (dataflow / loss / checkpoint)
+#
+# Minimal 2-epoch, tiny-batch run for quick verification that the model,
+# loss, cfunet_random data pipeline, and checkpoint I/O work end-to-end.
+# Do NOT use for benchmarking or paper results.
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: interp_park2022_cfunet_smoke
+  output_dir: results
+  seed: 42
+  device: cuda
+
+data:
+  segy:
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
+    traces_per_shot: 201
+    time_downsample: 1
+  test_ratio: 0.1
+  loader:
+    batch_size: 2             # tiny batch for smoke test
+    num_workers: 0
+    pin_memory: true
+
+preprocess:
+  mask_mode: cfunet_random
+  mask_ratio_range: [0.5, 0.875]
+  dt: 0.002
+  t0: 0.0
+  spherical_power: 1.2
+  normalize_mode: max_abs
+  normalize_scope: global
+  patch_normalize: true
+  patch_norm_eps: 1.0e-6
+  patch_time: 128
+  patch_trace: 128
+  patch_overlap: 0.5
+  max_shots: 1               # single shot only
+  skip: []
+
+model:
+  type: park2022_cfunet
+  params:
+    in_channels: 1
+    out_channels: 1
+    base_channels: 8         # tiny for smoke
+    num_levels: 3
+    upsample_mode: fourier_zero_padding
+    upsampler_scale_factor: 2
+    use_fftshift: true
+    fft_norm: backward
+    amplitude_correction: scale
+
+loss:
+  type: cfunet_mse_fourier
+  params:
+    alpha: 1.0
+    fft_norm: backward
+
+metrics:
+  - name: mae
+    params: {}
+
+optim:
+  type: adam
+  params:
+    lr: 5.0e-5
+
+scheduler:
+  type: none
+  params: {}
+
+train:
+  epochs: 2                  # minimal
+  grad_clip: null
+  log_step: true
+  log_interval: 5
+  eval_interval: 1
+  ckpt_interval: 1
+  vis_interval: 1
+  resume: null
+
+log:
+  log_dir: logs
+  plot_interval: 1

@@ -1019,3 +1019,59 @@
   pending paper PDF audit. Do NOT rename conservative config to paper.yaml
   until wavelet basis, channel counts, residual block count, Huber delta, loss
   weights, and training hyperparameters are verified from the paper.
+
+## 2026-08-11 - Add Park2022 CFunet reproduction (Coarse-Refine + Fourier loss)
+
+- Context: Reproduce Park et al., "Coarse-Refine Network With Upsampling
+  Techniques and Fourier Loss for the Reconstruction of Missing Seismic Data"
+  (IEEE TGRS, vol. 60, 2022, DOI 10.1109/TGRS.2022.3190292). CFunet =
+  coarse U-Net -> Fourier zero-padding upsampling x2 both axes -> refine
+  U-Net ending in a 3x3 stride-2 conv, trained with (MSE coarse+final +
+  alpha * complex-spectral L1) loss. Full paper PDF audited (text extracted,
+  figures transcribed by the user); architecture and training settings are
+  paper-explicit, FFT norm / amplitude correction / BN / head / normalisation
+  are documented reproduction-assumptions.
+- Change:
+  - `model/interpolation/park2022_cfunet.py` (new) — `FourierZeroPaddingUpsample2D`
+    (fft2 -> fftshift -> symmetric zero-pad -> ifftshift -> ifft2.real with
+    aligned-sample amplitude correction: s^2 backward / s ortho / 1 forward),
+    `Park2022CFUNet` (@register_model "park2022_cfunet": reuses repo UNet for
+    Gc/Gf with base_channels=22 num_levels=4 -> 22/44/88/176/352, Eq. 2 mask
+    overwrite, mandatory 3x3 stride-2 refine_down, `_intermediates` cache,
+    mask kwarg for the trainer).
+  - `utils/losses.py` — `FourierL1Loss` (@register_loss "fourier_l1", Eq. 8)
+    and `CFunetMSEFourierLoss` (@register_loss "cfunet_mse_fourier", Eqs. 6-8)
+    with the `attach_model(model)` protocol reading
+    `model._intermediates["coarse"]`; per-sample sum + batch mean reduction.
+  - `model/interpolation/__init__.py` — added `from . import park2022_cfunet`.
+  - `scripts/interpolation/train_interpolation_unet.py` — new `cfunet_random`
+    mask mode (per-patch random 50-87.5% trace removal via mask_traces with
+    seeded rng; observed mask 1=observed broadcast; falls through to patch
+    normalisation), shot-level masking exclusion, `--mask-mode` choice,
+    guarded loss wiring `if hasattr(loss_fn, "attach_model"): ...attach_model(unwrap_ddp(model))`.
+  - 7 configs: `park2022_cfunet_paper.yaml` (alpha=1, lr 5e-5, 128x128),
+    `park2022_cfunet_field_paper.yaml` (alpha=0.1, lr 1e-5, 128x120, Mobil
+    AVO), `park2022_cfunet_eval75.yaml` (fixed-75% validation via
+    mask_ratio_range [0.75, 0.75]), `park2022_cfunet_mse.yaml` (alpha=0
+    ablation), `park2022_cfunet_upsampling_ablation.yaml` (bilinear),
+    `park2022_cfunet_smoke.yaml`, `park2022_baseline_unet.yaml` (UNet+MSE
+    baseline). All with paper_alignment blocks.
+  - 5 test files: `test_park2022_fourier_upsample.py` (constant/sine/Nyquist
+    exactness under all FFT norms, amplitude correction, gradients),
+    `test_park2022_cfunet_architecture.py` (channels 22/44/88/176/352,
+    stride-2 final conv, Eq. 2 overwrite), `test_park2022_cfunet_loss.py`
+    (complex-difference-not-magnitude, alpha scaling, attach protocol),
+    `test_park2022_cfunet_training.py` (overfit, serialization, trainer
+    protocol), `test_park2022_cfunet_configs.py` (7 configs + paper values).
+  - `model/interpolation/park2022_cfunet_notes.md` — full doc with parameter
+    classification table (per-stage).
+- Impact: New model/losses available via the registry; train script gained a
+  new mask mode and guarded attach_model wiring (no changes to the trainer or
+  other models). Known quirk documented: the pre-existing `continuous`
+  `_patchify_pairs` branch returns a missing-mask in its obs_mask slot; the
+  new `cfunet_random` branch uses the correct 1=observed convention.
+- Status: PAPER-ALIGNED for all audited details; FFT norm (backward),
+  amplitude correction (scale), BN, 1x1 head, data normalisation remain
+  documented reproduction-assumptions. Validation masking shares the train
+  ratio range; `park2022_cfunet_eval75.yaml` reproduces the paper's fixed-75%
+  validation.

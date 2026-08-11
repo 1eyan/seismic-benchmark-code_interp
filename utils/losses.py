@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, Optional, Type
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 LOSS_REGISTRY: Dict[str, Type["BaseLoss"]] = {}
 
@@ -659,6 +660,129 @@ class WRDLSSIMHuberLoss(BaseLoss):
     ) -> torch.Tensor:
         if target is None:
             raise ValueError("WRDLSSIMHuberLoss requires `target`.")
+        return self.components(pred, target)["loss_total"]
+
+
+# ----------------------------------------------------------------------
+# Park2022 CFunet losses (paper Eqs. 6-8)
+# ----------------------------------------------------------------------
+
+
+@register_loss("fourier_l1")
+class FourierL1Loss(BaseLoss):
+    """Spectral L1 loss ``lossF = ||F(pred) - F(target)||_1`` (paper Eq. 8).
+
+    The norm is the L1 sum of the modulus of the *complex* difference of
+    the 2D Fourier spectra — not a magnitude-only comparison.  Reduction is
+    per-sample spatial SUM then batch mean, matching the Pan2020 convention.
+
+    Parameters
+    ----------
+    fft_norm : ``"backward"``, ``"ortho"`` or ``"forward"`` passed to
+        ``torch.fft.fft2``.
+    reduction : ``"mean"`` (batch mean of per-sample sums) or ``"sum"``
+        (sum over the whole batch).
+    """
+
+    def __init__(self, fft_norm: str = "backward", reduction: str = "mean") -> None:
+        super().__init__()
+        if fft_norm not in ("backward", "ortho", "forward"):
+            raise ValueError(
+                f"fft_norm must be 'backward', 'ortho' or 'forward', got {fft_norm!r}."
+            )
+        if reduction not in ("mean", "sum"):
+            raise ValueError(f"reduction must be 'mean' or 'sum', got {reduction!r}.")
+        self.fft_norm = fft_norm
+        self.reduction = reduction
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: Optional[torch.Tensor] = None,
+        **extras: Any,
+    ) -> torch.Tensor:
+        if target is None:
+            raise ValueError("FourierL1Loss requires `target`.")
+        diff = torch.fft.fft2(pred, norm=self.fft_norm) - torch.fft.fft2(
+            target, norm=self.fft_norm
+        )
+        per_sample = diff.abs().sum(dim=(1, 2, 3))
+        if self.reduction == "sum":
+            return per_sample.sum()
+        return per_sample.mean()
+
+
+@register_loss("cfunet_mse_fourier")
+class CFunetMSEFourierLoss(BaseLoss):
+    """CFunet objective: ``lossMSE + alpha * lossF`` (paper Eqs. 6-8).
+
+    ``lossMSE = (||Oc - L||_F^2 + ||Of - L||_F^2) / 2`` supervises the
+    coarse output ``Oc`` and the final output ``Of``; ``lossF`` is the
+    complex-spectral L1 term on the final output only.  Both terms use
+    per-sample spatial SUM then batch mean reduction.
+
+    The coarse output is read from ``model._intermediates["coarse"]``, so
+    the model must be attached with :meth:`attach_model` before use.
+
+    Parameters
+    ----------
+    alpha : weight of the Fourier term (paper: 1.0 synthetic, 0.1 field).
+    fft_norm : FFT normalization for the Fourier term.
+    """
+
+    def __init__(self, alpha: float = 0.1, fft_norm: str = "backward") -> None:
+        super().__init__()
+        if alpha < 0:
+            raise ValueError(f"alpha must be non-negative, got {alpha}.")
+        if fft_norm not in ("backward", "ortho", "forward"):
+            raise ValueError(
+                f"fft_norm must be 'backward', 'ortho' or 'forward', got {fft_norm!r}."
+            )
+        self.alpha = float(alpha)
+        self.fft_norm = fft_norm
+        self._model: Optional[nn.Module] = None
+
+    def attach_model(self, model: nn.Module) -> None:
+        """Attach the CFunet model whose ``_intermediates`` feed this loss."""
+        self._model = model
+
+    def components(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Return ``loss_total`` / ``loss_mse`` / ``loss_fourier`` tensors."""
+        if self._model is None:
+            raise RuntimeError(
+                "CFunetMSEFourierLoss requires attach_model(model) before use."
+            )
+        oc = self._model._intermediates.get("coarse")
+        if oc is None:
+            raise RuntimeError(
+                "CFunetMSEFourierLoss could not find 'coarse' in "
+                "model._intermediates; run the model forward pass first."
+            )
+        mse_coarse = (oc - target).square().sum(dim=(1, 2, 3)).mean()
+        mse_final = (pred - target).square().sum(dim=(1, 2, 3)).mean()
+        loss_mse = (mse_coarse + mse_final) / 2.0
+        fdiff = torch.fft.fft2(pred, norm=self.fft_norm) - torch.fft.fft2(
+            target, norm=self.fft_norm
+        )
+        loss_fourier = fdiff.abs().sum(dim=(1, 2, 3)).mean()
+        return {
+            "loss_total": loss_mse + self.alpha * loss_fourier,
+            "loss_mse": loss_mse,
+            "loss_fourier": loss_fourier,
+        }
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: Optional[torch.Tensor] = None,
+        **extras: Any,
+    ) -> torch.Tensor:
+        if target is None:
+            raise ValueError("CFunetMSEFourierLoss requires `target`.")
         return self.components(pred, target)["loss_total"]
 
 

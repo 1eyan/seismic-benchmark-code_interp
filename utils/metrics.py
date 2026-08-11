@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 import re
-from typing import Any, Callable, Dict, List, Literal, Tuple, Type
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Type
 
 import numpy as np
 import torch

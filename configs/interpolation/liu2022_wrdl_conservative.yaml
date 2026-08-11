@@ -15,7 +15,7 @@ experiment:
   name: interp_liu2022_wrdl_conservative
   output_dir: results
   seed: 42
-  device: cuda
+  device: cuda:1
 
 data:
   segy:
@@ -24,23 +24,25 @@ data:
     time_downsample: 1
   test_ratio: 0.1
   loader:
-    batch_size: 4             # reproduction-assumption
+    batch_size: 96          # reproduction-assumption
     num_workers: 4
     pin_memory: true
 
 preprocess:
-  mask_mode: continuous       # paper-explicit: consecutive missing traces
-  mask_ratio: 0.2             # reproduction-assumption (20%)
+  mask_mode: continuous
+  mask_ratio: 0.1
   dt: 0.002
   t0: 0.0
   spherical_power: 1.2
-  normalize_mode: max_abs     # [-1, 1] normalisation (repository-adaptation)
+  uniform_stride: 2
+  normalize_mode: max_abs
   normalize_scope: global
-  patch_time: 128             # reproduction-assumption
+  patch_normalize: true
+  patch_norm_eps: 1.0e-6
+  patch_time: 256
   patch_trace: 128
   patch_overlap: 0.5
   max_shots: null
-  skip: []
 
 model:
   type: liu2022_wrdl

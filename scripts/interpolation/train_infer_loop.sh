@@ -48,8 +48,8 @@ MASTER_PORT="${MASTER_PORT:-auto}"
 TORCHRUN_EXTRA="${TORCHRUN_EXTRA:-}"
 
 #BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/chai2020_unet_paper.yaml}"
-#BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/li2022_caunet_seg_c3_paper.yaml}"
-BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/pan2020_pconv_author_code.yaml}"
+#BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/li2022_caunet_seg_c3_paper.yaml}"/home/czt/seismic-benchmark-code_interp/configs/interpolation/liu2022_wrdl_conservative.yaml
+BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/liu2022_wrdl_conservative.yaml}"
 TRAIN_PY="${TRAIN_PY:-scripts/interpolation/train_interpolation_unet.py}" 
 INFER_PY="${INFER_PY:-scripts/interpolation/inference_interpolation.py}"
 
