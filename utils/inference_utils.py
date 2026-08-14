@@ -80,7 +80,11 @@ def inference_on_shots(
     patch_normalize: bool = False,
     patch_norm_eps: float = 1e-6,
     include_mask_channel: bool = False,
-) -> np.ndarray:
+    mask_mode: Optional[str] = None,
+    mask_ratio_range: Optional[Tuple[float, float]] = None,
+    mask_seed: Optional[int] = None,
+    return_missing_mask: bool = False,
+) -> "np.ndarray | Tuple[np.ndarray, np.ndarray]":
     """Patchify a full shot volume, run the model in batches, and reconstruct.
 
     Parameters
@@ -98,13 +102,24 @@ def inference_on_shots(
                        (1 = missing, 0 = observed) to the input patches,
                        producing C=2 inputs. Safe because masked traces
                        are exactly zero after normalisation.
+    mask_mode        : optional per-patch missing-trace masking applied after
+                       patchification; only ``"cfunet_random"`` is supported
+                       (mirrors the training cfunet_random branch).
+    mask_ratio_range : ``(low, high)`` per-patch missing-ratio range drawn
+                       uniformly; default ``(0.5, 0.875)``.
+    mask_seed        : seed for the masking RNG; ``None`` = unseeded.
+    return_missing_mask : if True, also return the overlap-weighted per-position
+                       missing fraction (0 = never masked, 1 = always masked).
 
     Returns
     -------
     pred_shots       : ``(n_shots, n_traces, n_time)`` numpy array reconstructed by
-                       ``unpatchify_uniform``.
+                       ``unpatchify_uniform``. When ``return_missing_mask`` is
+                       True, returns ``(pred_shots, missing_frac)`` with
+                       ``missing_frac`` of the same shape and values in ``[0, 1]``.
     """
     from tools.patching import patchify_uniform, unpatchify_uniform
+    from tools.preprocessing import mask_traces
 
     patches, info = patchify_uniform(
         input_shots,
@@ -114,6 +129,25 @@ def inference_on_shots(
     )
 
     patches = patches.astype(np.float32, copy=False)
+
+    miss_trace_mask: Optional[np.ndarray] = None
+    if mask_mode is not None:
+        if mask_mode != "cfunet_random":
+            raise ValueError(
+                f"mask_mode {mask_mode!r} is not supported (only 'cfunet_random')."
+            )
+        # Same per-patch protocol as the training cfunet_random branch
+        # (scripts/interpolation/train_interpolation_unet.py).
+        ratio_range = mask_ratio_range or (0.5, 0.875)
+        rng = np.random.default_rng(mask_seed) if mask_seed is not None else None
+        patches_3d = patches[:, 0, :, :]
+        masked_3d, miss_trace_mask = mask_traces(
+            patches_3d,
+            mode="random",
+            ratio_range=(float(ratio_range[0]), float(ratio_range[1])),
+            rng=rng,
+        )
+        patches = masked_3d[:, None, :, :]
 
     if patch_normalize:
         scales = np.max(
@@ -181,7 +215,21 @@ def inference_on_shots(
     if patch_normalize:
         pred_patches = pred_patches * scales
 
-    return unpatchify_uniform(pred_patches, info)
+    pred_shots = unpatchify_uniform(pred_patches, info)
+
+    if return_missing_mask:
+        if miss_trace_mask is None:
+            missing_frac = np.zeros(pred_shots.shape, dtype=np.float32)
+        else:
+            h, w = info["patch_size"]
+            miss_full = np.broadcast_to(
+                miss_trace_mask[:, :, None],
+                (miss_trace_mask.shape[0], h, w),
+            ).astype(np.float32)
+            missing_frac = unpatchify_uniform(miss_full, info)
+        return pred_shots, missing_frac
+
+    return pred_shots
 
 def compute_shot_metrics(
     pred_shots: np.ndarray,
