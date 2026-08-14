@@ -13,8 +13,9 @@
 #             seed, then evaluates each on continuous shot-level masks.
 #
 # Inference resolves the checkpoint and the exact training-time config from the
-# experiment directory (results/<exp>/config.yaml + checkpoints/best.pt), then
-# overrides the mask via CLI, so the trained parameters are always found.
+# experiment directory (<experiment.output_dir>/<exp>/config.yaml +
+# checkpoints/best.pt), then overrides the mask via CLI, so the trained
+# parameters are always found.
 #
 # Usage:
 #   bash scripts/interpolation/train_infer_loop_cfunet.sh
@@ -61,7 +62,7 @@ CONTINUOUS_EVAL=(
   "continuous:40tr"
 )
 
-N_SEEDS="${N_SEEDS:-1}"
+N_SEEDS="${N_SEEDS:-3}"
 START_SEED="${START_SEED:-42}"
 
 INFER_DEVICE="${INFER_DEVICE:-cuda:0}"
@@ -121,6 +122,14 @@ get_experiment_name() {
   local config_path="$1"
   grep -m1 -E '^[[:space:]]*name:[[:space:]]*' "${config_path}" \
     | sed -E 's/^[[:space:]]*name:[[:space:]]*//' \
+    | sed -E 's/[[:space:]]+#.*$//;s/[[:space:]]*$//'
+}
+
+get_experiment_output_dir() {
+  local config_path="$1"
+  sed -n -E '/^experiment:/,/^[a-zA-Z_][a-zA-Z0-9_]*:/p' "${config_path}" \
+    | grep -m1 -E '^[[:space:]]*output_dir:[[:space:]]*' \
+    | sed -E 's/^[[:space:]]*output_dir:[[:space:]]*//' \
     | sed -E 's/[[:space:]]+#.*$//;s/[[:space:]]*$//'
 }
 
@@ -203,8 +212,8 @@ find_checkpoint() {
   return 1
 }
 
-# Train one family config for one seed; echo the experiment directory name.
-# The saved config.yaml + checkpoints live under results/<name>.
+# Train one family config for one seed; echo the absolute experiment directory.
+# The saved config.yaml + checkpoints live under <experiment.output_dir>/<name>.
 train_family() {
   local config_path="$1"   # repo-relative config path
   local base_name="$2"     # experiment.name parsed from the config
@@ -218,8 +227,16 @@ train_family() {
     -e 's/^([[:space:]]*name:[[:space:]]*).*/\1'"${base_name}"'_seed'"${seed}"'/' \
     "${REPO_ROOT}/${config_path}" > "${tmpcfg}"
 
+  local out_root
+  out_root="$(get_experiment_output_dir "${REPO_ROOT}/${config_path}")"
+  [[ -n "${out_root}" ]] || die "Could not parse experiment.output_dir from ${config_path}"
+  if [[ "${out_root}" != /* ]]; then
+    out_root="${REPO_ROOT}/${out_root}"
+  fi
+
   local exp_dir_name="${base_name}_seed${seed}_${suffix}"
-  local ckpt_dir="${REPO_ROOT}/results/${exp_dir_name}/checkpoints"
+  local exp_dir="${out_root}/${exp_dir_name}"
+  local ckpt_dir="${exp_dir}/checkpoints"
 
   local master_port
   if [[ "${MASTER_PORT}" == "auto" ]]; then
@@ -228,7 +245,7 @@ train_family() {
     master_port="${MASTER_PORT}"
   fi
 
-  log "Training: ${config_path} -> ${exp_dir_name}"
+  log "Training: ${config_path} -> ${exp_dir}"
   run_cmd torchrun ${TORCHRUN_EXTRA} \
     --nproc_per_node="${NPROC_PER_NODE}" \
     --master_port="${master_port}" \
@@ -241,19 +258,18 @@ train_family() {
   fi
   rm -f "${tmpcfg}"
 
-  echo "${exp_dir_name}"
+  echo "${exp_dir}"
 }
 
 # Run one inference on a trained experiment directory with a given eval spec.
 run_inference() {
-  local exp_dir_name="$1"   # results/<name>
-  local spec="$2"           # eval spec
-  local out_suffix="$3"     # output dir suffix
+  local exp_dir="$1"       # absolute experiment directory
+  local spec="$2"          # eval spec
+  local out_suffix="$3"    # output dir suffix
   local kind="$4"
   local mode="$5"
   local value="$6"
 
-  local exp_dir="${REPO_ROOT}/results/${exp_dir_name}"
   local config_yaml="${exp_dir}/config.yaml"
   local checkpoint
   checkpoint="$(find_checkpoint "${exp_dir}/checkpoints")" \

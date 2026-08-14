@@ -14,7 +14,7 @@
 
 set -uo pipefail
 
-RESULTS_ROOT="${1:-${RESULTS_ROOT:-results}}"
+RESULTS_ROOT="${1:-${RESULTS_ROOT:-/cloud/cloud-s3fs}}"
 COLLECT_ROOT="${2:-${COLLECT_ROOT:-collected}}"
 DRY_RUN="${DRY_RUN:-false}"
 KEEP_EPOCHS="${KEEP_EPOCHS:-false}"

@@ -26,7 +26,7 @@ data:
     time_downsample: 1
   test_ratio: 0.1
   loader:
-    batch_size: 384         # paper-inferred (matching ANet field profile)
+    batch_size: 128         # paper-inferred (matching ANet field profile)
     num_workers: 4
     pin_memory: true
 
@@ -102,7 +102,7 @@ paper_alignment:
   model_name: paper-explicit (CFunet)
   alpha_field: paper-explicit (0.1, Table II)
   learning_rate: paper-explicit (1e-5 field)
-  patch_size: paper-explicit (128 x 120)
+  patch_size: repository-adaptation (64x128; paper 128 x 120, 120-trace cloud data)
   dataset: repository-adaptation (in-repo Mobil AVO volume; paper applies a
     62.5 Hz low-pass filter before patching — not reproduced here)
   low_pass_filter: not-reproduced (paper applies 62.5 Hz low-pass filter)

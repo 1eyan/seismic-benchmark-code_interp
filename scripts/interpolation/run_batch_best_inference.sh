@@ -20,7 +20,7 @@
 
 set -uo pipefail
 
-RESULTS_ROOT="${1:-${RESULTS_ROOT:-results}}"
+RESULTS_ROOT="${1:-${RESULTS_ROOT:-/cloud/cloud-s3fs}}"
 COLLECT_ROOT="${2:-${COLLECT_ROOT:-collected}}"
 INFER_DEVICE="${INFER_DEVICE:-cuda:0}"
 FORCE="${FORCE:-false}"

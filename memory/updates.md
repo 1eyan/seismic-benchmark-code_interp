@@ -2,6 +2,15 @@
 
 > Chronological log of **important updates**. Record only: added/removed files, model-structure changes, loss/metric changes, dependency upgrades, API changes, critical bugfixes, open-source references. Trivia (typos, renames, reformatting) is **not** recorded.
 
+## 2026-08-15 - Sync all Park2022 CFunet configs to the cloud data/output paths
+- Context: Only park2022_cfunet_field_paper.yaml used the cloud machine paths; the other seven Park2022 configs still pointed at /NAS SEGC3 data (traces_per_shot 201, output_dir results, device cuda:1), so they could not run on the cloud machine, and patch_trace 128 was invalid for 120-trace cloud data (also breaks 4-level fourier upsampling divisibility).
+- Change:
+  - All park2022_*.yaml: output_dir -> /cloud/cloud-s3fs, data.segy.path -> /cloud/cloud-s3fs/seismic_shotper0.8.segy, traces_per_shot -> 120, device -> cuda:0, batch_size -> 128 (smoke keeps 2), patch_trace -> 64 (paper_alignment patch_size lines marked repository-adaptation).
+  - scripts/interpolation/train_infer_loop_cfunet.sh: added get_experiment_output_dir; checkpoint/config/inference dirs now derive from experiment.output_dir instead of hard-coded results/.
+  - run_batch_best_inference.sh / centralize_best_params.sh / collect_inference_results.py: default results root changed from results to /cloud/cloud-s3fs.
+- Impact: The CFunet family (cfunet_random + continuous) is fully runnable on the cloud machine with uniform data/output conventions.
+- Follow-up: None.
+
 ## 2026-08-15 - Fast-forward to origin/main 3163a38; fix baseline loop default config
 - Context: origin/main added 3163a38 (park2022_cfunet_continuous.yaml, train_infer_loop_cfunet.sh, batch-inference scripts, uniform-mask stride fix). It is a direct child of the local merge 834fa87, so the sync was a clean fast-forward with no textual conflicts. Semantic conflict: train_infer_loop.sh restored the default shot-level experiment list (random/uniform/continuous) but kept BASE_CONFIG=park2022_cfunet_field_paper.yaml, whose mask_ratio_range breaks that list (wrong run-name suffix -> silently skipped inference for random/uniform specs; mutual-exclusion crash for continuous specs).
 - Change:
