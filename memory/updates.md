@@ -2,6 +2,12 @@
 
 > Chronological log of **important updates**. Record only: added/removed files, model-structure changes, loss/metric changes, dependency upgrades, API changes, critical bugfixes, open-source references. Trivia (typos, renames, reformatting) is **not** recorded.
 
+## 2026-08-15 - Merge origin/main 96e1b92 into the CFunet sync commit
+- Context: origin/main gained 96e1b92 (cfunet loop: N_SEEDS default 1 -> 3; extra-inference suffix now includes the mask mode so random:0.5 and uniform:0.5 generalization runs no longer collide on inference_ratio60). Its hunks did not overlap the local output_dir refactor, so the 3-way merge was clean.
+- Change: adopted the remote N_SEEDS=3 default and the mode-qualified extra suffix alongside the local experiment.output_dir derivation.
+- Impact: train_infer_loop_cfunet.sh carries both fixes; extra inference dirs are unique per mode and per seed.
+- Follow-up: None.
+
 ## 2026-08-15 - Sync all Park2022 CFunet configs to the cloud data/output paths
 - Context: Only park2022_cfunet_field_paper.yaml used the cloud machine paths; the other seven Park2022 configs still pointed at /NAS SEGC3 data (traces_per_shot 201, output_dir results, device cuda:1), so they could not run on the cloud machine, and patch_trace 128 was invalid for 120-trace cloud data (also breaks 4-level fourier upsampling divisibility).
 - Change:
