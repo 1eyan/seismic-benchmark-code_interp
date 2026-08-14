@@ -51,8 +51,11 @@ CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 MASTER_PORT="${MASTER_PORT:-auto}"
 TORCHRUN_EXTRA="${TORCHRUN_EXTRA:-}"
-BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/park2022_cfunet_field_paper.yaml}"
-#BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/yu2022_anet_field_paper.yaml}"
+# Baseline loop: the default experiment list below covers shot-level
+# random/uniform/continuous masks for baseline models. Park2022 CFunet runs
+# belong to train_infer_loop_cfunet.sh (per-patch cfunet_random + continuous
+# families); do not pair this script with a mask_ratio_range config.
+BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/liu2022_wrdl_conservative.yaml}"
 TRAIN_PY="${TRAIN_PY:-scripts/interpolation/train_interpolation_unet.py}"
 INFER_PY="${INFER_PY:-scripts/interpolation/inference_interpolation.py}"
 

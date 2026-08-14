@@ -2,6 +2,13 @@
 
 > Chronological log of **important updates**. Record only: added/removed files, model-structure changes, loss/metric changes, dependency upgrades, API changes, critical bugfixes, open-source references. Trivia (typos, renames, reformatting) is **not** recorded.
 
+## 2026-08-15 - Fast-forward to origin/main 3163a38; fix baseline loop default config
+- Context: origin/main added 3163a38 (park2022_cfunet_continuous.yaml, train_infer_loop_cfunet.sh, batch-inference scripts, uniform-mask stride fix). It is a direct child of the local merge 834fa87, so the sync was a clean fast-forward with no textual conflicts. Semantic conflict: train_infer_loop.sh restored the default shot-level experiment list (random/uniform/continuous) but kept BASE_CONFIG=park2022_cfunet_field_paper.yaml, whose mask_ratio_range breaks that list (wrong run-name suffix -> silently skipped inference for random/uniform specs; mutual-exclusion crash for continuous specs).
+- Change:
+  - `scripts/interpolation/train_infer_loop.sh`: default BASE_CONFIG changed to `configs/interpolation/liu2022_wrdl_conservative.yaml` (no mask_ratio_range, cloud output_dir matching the loop's checkpoint paths); added a comment pointing CFunet runs to train_infer_loop_cfunet.sh.
+- Impact: Default invocation of the baseline loop is coherent again; CFunet families run through the new dedicated loop script.
+- Follow-up: None.
+
 ## 2026-08-14 - Sync with origin/main: adopt remote cfunet_random inference API
 - Context: origin/main gained commit 2a777b3 (cfunet_random inference via `return_missing_mask`, returning an overlap-weighted per-position missing fraction), while the working tree carried a parallel local implementation of the same feature (`return_mask` boolean API, superseding the 2026-08-13/14 entries below). Merging required picking one API for `inference_on_shots`.
 - Change:
