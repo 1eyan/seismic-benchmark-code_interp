@@ -350,7 +350,7 @@ for ((i = 0; i < N_SEEDS; i++)); do
         else
           extra_kind="ratio"
           extra_value="$(ratio_add "${EXP_MASK_RATIO}" "${EXTRA_RATIO_STEP}")"
-          extra_suffix="ratio$(ratio_to_pct "${extra_value}")"
+          extra_suffix="${EXP_MASK_MODE}$(ratio_to_pct "${extra_value}")"
         fi
         run_inference "${exp_random}" "${spec}" "${extra_suffix}" \
           "${extra_kind}" "${EXP_MASK_MODE}" "${extra_value}"
