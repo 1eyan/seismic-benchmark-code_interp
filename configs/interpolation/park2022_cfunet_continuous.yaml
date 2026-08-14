@@ -1,28 +1,19 @@
 # ---------------------------------------------------------------------------
-# Park et al. 2022 — CFunet paper-aligned configuration (synthetic profile)
+# Park et al. 2022 — CFunet continuous-missing (consecutive) training config
 #
-# Paper: "Coarse-Refine Network With Upsampling Techniques and Fourier Loss
-#         for the Reconstruction of Missing Seismic Data"
-#        IEEE TGRS, vol. 60, 2022, art. 5917615.
-# DOI:  10.1109/TGRS.2022.3190292
+# Same CFunet architecture / loss / optimizer / scheduler as
+# park2022_cfunet_paper.yaml, but trained with contiguous (consecutive) missing
+# traces so it can be evaluated on the continuous-missing benchmark scenarios
+# (continuous:20tr / 30tr / 40tr).
 #
-# Paper-explicit (verified from the paper text and figures): coarse/refine
-# U-Nets with channels 22->44->88->176->352, 3x3 convolutions, Fourier
-# zero-padding upsampling x2 in both axes, final 3x3 stride-2 conv (Eq. 5),
-# loss (MSE coarse+final + alpha * Fourier L1) with alpha = 1.0 (synthetic),
-# random trace removal 50%-87.5% per training patch, 128x128 patches,
-# Adam lr = 5e-5, batch size 32, up to 20 epochs.  The in-repo SEGC3 volume
-# stands in for the paper's synthetic modeling experiment (repository
-# adaptation, same convention as the Yu2022 / Li2022 / Chai2020 configs).
-# Unresolved details (FFT norm, amplitude correction, BN, head, data
-# normalization) use documented reproduction-assumptions — see the
-# paper_alignment block below.  Validation here draws the same random
-# missing ratio range as training; use park2022_cfunet_eval75.yaml for the
-# paper's fixed-75% validation protocol.
+# The masking settings mirror the repository's other continuous configs
+# (chai2020_unet_paper, liu2022_wrdl_conservative): mask_mode=continuous with
+# mask_ratio=0.1.  Model, loss, optim, scheduler, train and data blocks are
+# byte-identical to the paper config.
 # ---------------------------------------------------------------------------
 
 experiment:
-  name: interp_park2022_cfunet_paper
+  name: interp_park2022_cfunet_continuous
   output_dir: results
   seed: 42
   device: cuda:1
@@ -39,8 +30,8 @@ data:
     pin_memory: true
 
 preprocess:
-  mask_mode: cfunet_random
-  mask_ratio_range: [0.5, 0.875]   # paper-explicit (train missing ratio)
+  mask_mode: continuous
+  mask_ratio: 0.1           # matches other continuous configs (10% consecutive)
   dt: 0.002
   t0: 0.0
   spherical_power: 1.2
@@ -116,8 +107,8 @@ paper_alignment:
   mse_loss_coarse_final: paper-explicit (Eq. 6)
   fourier_l1_loss: paper-explicit (Eq. 8, complex difference)
   alpha_synthetic: paper-explicit (1.0, Table I)
-  mask_ratio_train: paper-explicit (50%-87.5% random)
-  mask_ratio_validation: paper-explicit (75% fixed; use eval75 config)
+  mask_mode: repository-adaptation (continuous; benchmark consecutive-missing)
+  mask_ratio: repository-adaptation (0.1; matches other continuous configs)
   patch_size: paper-explicit (128x128)
   optimizer: paper-explicit (Adam)
   learning_rate: paper-explicit (5e-5 synthetic)

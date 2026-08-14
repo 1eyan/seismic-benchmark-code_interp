@@ -170,8 +170,9 @@ def _preprocess_shots(
     mask_mode = str(prep.get("mask_mode", "uniform"))
     mask_ratio = float(prep.get("mask_ratio", 0.5))
     mask_kwargs: Dict[str, Any] = {"mode": mask_mode, "ratio": mask_ratio}
-    if mask_mode == "uniform":
-        mask_kwargs["uniform_stride"] = int(prep.get("uniform_stride", 2))
+    # Uniform missing ratio drives the stride (mask_traces derives
+    # stride = round(1/(1-ratio))); config uniform_stride is ignored so a
+    # CLI --mask-ratio always takes effect.
     if prep.get("continuous_missing_traces") is not None:
         mask_kwargs["missing_traces"] = int(prep["continuous_missing_traces"])
     masked, _ = mask_traces(shots, **mask_kwargs)

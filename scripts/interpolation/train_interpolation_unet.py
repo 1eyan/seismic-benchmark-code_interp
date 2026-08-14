@@ -114,8 +114,9 @@ def _preprocess_shots(cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.n
     ):
         mask_ratio = float(prep.get("mask_ratio", 0.5))
         mask_kwargs: Dict[str, Any] = {"mode": mask_mode, "ratio": mask_ratio}
-        if mask_mode == "uniform":
-            mask_kwargs["uniform_stride"] = int(prep.get("uniform_stride", 2))
+        # Uniform missing ratio drives the stride (mask_traces derives
+        # stride = round(1/(1-ratio))); config uniform_stride is ignored so a
+        # CLI --mask-ratio always takes effect.
         masked, _ = mask_traces(shots, **mask_kwargs)
     else:
         masked = shots
@@ -214,8 +215,9 @@ def _patchify_pairs(
             )
 
         input_patches = masked_3d[:, None, :, :]
+        # Observation mask: 1 = observed, 0 = missing (paper Eq. 2).
         obs_mask = np.broadcast_to(
-            trace_mask_3d[:, None, :, None].astype(np.float32),
+            (~trace_mask_3d)[:, None, :, None].astype(np.float32),
             input_patches.shape,
         ).copy()
 

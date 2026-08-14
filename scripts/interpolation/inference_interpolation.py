@@ -255,9 +255,8 @@ def main() -> None:
     if "mask_traces" not in skip and mask_mode != "cfunet_random":
         mask_kwargs: Dict[str, Any] = {"mode": mask_mode, "ratio": mask_ratio}
 
-        if mask_mode == "uniform":
-            mask_kwargs["uniform_stride"] = int(prep.get("uniform_stride", 2))
-
+        # Uniform missing ratio follows --mask-ratio (mask_traces derives the
+        # stride via round(1/(1-ratio))); config uniform_stride is training-only.
         if mask_mode == "continuous" and prep.get("continuous_missing_traces") is not None:
             mask_kwargs["missing_traces"] = int(prep["continuous_missing_traces"])
 

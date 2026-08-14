@@ -285,8 +285,8 @@ def main() -> None:
         shots, stats = normalize(shots, mode=norm_mode, per=norm_scope)
 
     mask_kwargs: Dict[str, Any] = {"mode": mask_mode, "ratio": mask_ratio}
-    if mask_mode == "uniform":
-        mask_kwargs["uniform_stride"] = int(prep.get("uniform_stride", 2))
+    # Uniform missing ratio follows the eval mask-ratio (mask_traces derives
+    # the stride via round(1/(1-ratio))); config uniform_stride is training-only.
     if continuous_missing_traces is not None:
         mask_kwargs["missing_traces"] = int(continuous_missing_traces)
     masked, trace_mask = mask_traces(shots, **mask_kwargs)
