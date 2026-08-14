@@ -62,3 +62,11 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# Config / settings YAML files
+configs/**/*.yaml
+configs/**/*.yml
+
+# Shell scripts
+scripts/**/*.sh
+scripts/**/*.bash

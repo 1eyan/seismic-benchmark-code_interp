@@ -79,9 +79,9 @@ INFER_PY=""
 # Fixed trace count is only meaningful for continuous missing traces.
 EXPERIMENTS=(
   #"random:0.3"
-  "random:0.5"
-  "uniform:0.5"
-  "uniform:0.7"
+ #"random:0.5"
+ # "uniform:0.5"
+ # "uniform:0.7"
   "continuous:20tr"
   "continuous:30tr"
   "continuous:40tr"
@@ -89,7 +89,7 @@ EXPERIMENTS=(
 N_SEEDS=3
 START_SEED=42
 
-INFER_DEVICE="${INFER_DEVICE:-cuda:2}"
+INFER_DEVICE="${INFER_DEVICE:-}"
 RUN_INFERENCE=true
 RUN_EXTRA_INFERENCE=true
 
@@ -101,6 +101,10 @@ EXTRA_TRACES_STEP=10
 
 # If true, use best.pt when available; otherwise use latest epoch_*.pt.
 PREFER_BEST_CHECKPOINT=true
+
+# If true, delete epoch_*.pt after inference, keeping best.pt only
+# (only when best.pt exists).
+CLEANUP_EPOCH_CKPTS="${CLEANUP_EPOCH_CKPTS:-true}"
 
 # If true, only print commands.
 DRY_RUN=false
@@ -141,6 +145,22 @@ get_experiment_name() {
   local config_path="$1"
   grep -m1 -E '^[[:space:]]*name:[[:space:]]*' "${config_path}" \
     | sed -E 's/^[[:space:]]*name:[[:space:]]*//' \
+    | sed -E 's/[[:space:]]+#.*$//;s/[[:space:]]*$//'
+}
+
+get_experiment_device() {
+  local config_path="$1"
+  sed -n -E '/^experiment:/,/^[a-zA-Z_][a-zA-Z0-9_]*:/p' "${config_path}" \
+    | grep -m1 -E '^[[:space:]]*device:[[:space:]]*' \
+    | sed -E 's/^[[:space:]]*device:[[:space:]]*//' \
+    | sed -E 's/[[:space:]]+#.*$//;s/[[:space:]]*$//'
+}
+
+get_experiment_output_dir() {
+  local config_path="$1"
+  sed -n -E '/^experiment:/,/^[a-zA-Z_][a-zA-Z0-9_]*:/p' "${config_path}" \
+    | grep -m1 -E '^[[:space:]]*output_dir:[[:space:]]*' \
+    | sed -E 's/^[[:space:]]*output_dir:[[:space:]]*//' \
     | sed -E 's/[[:space:]]+#.*$//;s/[[:space:]]*$//'
 }
 
@@ -269,6 +289,21 @@ esac
 NAME_BASE="$(get_experiment_name "${REPO_ROOT}/${BASE_CONFIG}")"
 [[ -n "${NAME_BASE}" ]] || die "Could not parse experiment.name from ${BASE_CONFIG}"
 
+# Default inference device to the experiment.device from the config
+# (e.g. cuda:0), so inference runs on the same GPU the model was trained on.
+if [[ -z "${INFER_DEVICE}" ]]; then
+  INFER_DEVICE="$(get_experiment_device "${REPO_ROOT}/${BASE_CONFIG}")"
+fi
+[[ -n "${INFER_DEVICE}" ]] || die "Could not parse experiment.device from ${BASE_CONFIG}; set INFER_DEVICE explicitly"
+
+# Resolve the checkpoint/inference root from the config's output_dir so the
+# paths always match where training actually saves checkpoints.
+OUT_DIR="$(get_experiment_output_dir "${REPO_ROOT}/${BASE_CONFIG}")"
+[[ -n "${OUT_DIR}" ]] || die "Could not parse experiment.output_dir from ${BASE_CONFIG}"
+if [[ "${OUT_DIR}" != /* ]]; then
+  OUT_DIR="${REPO_ROOT}/${OUT_DIR}"
+fi
+
 TOTAL_RUNS=$(( ${#EXPERIMENTS[@]} * N_SEEDS ))
 run_idx=0
 
@@ -278,8 +313,10 @@ log "Base config: ${BASE_CONFIG}"
 log "Experiment base name: ${NAME_BASE}"
 log "Train script: ${TRAIN_PY}"
 log "Infer script: ${INFER_PY}"
+log "Output dir: ${OUT_DIR}"
 log "Total runs: ${TOTAL_RUNS}"
 log "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+log "INFER_DEVICE=${INFER_DEVICE}"
 
 # ==============================================================================
 # Main loop
@@ -327,7 +364,7 @@ for spec in "${EXPERIMENTS[@]}"; do
       --config "${tmpcfg}" \
       "${train_args_array[@]}"
 
-    ckpt_dir="${REPO_ROOT}/results/${run_name_full}/checkpoints"
+    ckpt_dir="${OUT_DIR}/${run_name_full}/checkpoints"
     if ! checkpoint="$(find_checkpoint "${ckpt_dir}")"; then
       log "WARNING: No checkpoint found in ${ckpt_dir}; skipping inference."
       rm -f "${tmpcfg}"
@@ -343,7 +380,7 @@ for spec in "${EXPERIMENTS[@]}"; do
       fi
       read -r -a infer_args_array <<< "${infer_args_string}"
 
-      infer_out="${REPO_ROOT}/results/${run_name_full}/inference"
+      infer_out="${OUT_DIR}/${run_name_full}/inference"
 
       log "Inference started: matching training missing setting."
       run_cmd python "${REPO_ROOT}/${INFER_PY}" \
@@ -368,7 +405,7 @@ for spec in "${EXPERIMENTS[@]}"; do
       extra_args_string="$(infer_args "${extra_kind}" "${EXP_MASK_MODE}" "${extra_value}")"
       read -r -a extra_args_array <<< "${extra_args_string}"
 
-      infer_out_extra="${REPO_ROOT}/results/${run_name_full}/inference_${extra_suffix}"
+      infer_out_extra="${OUT_DIR}/${run_name_full}/inference_${extra_suffix}"
 
       log "Extra inference started: missing=${extra_value}."
       run_cmd python "${REPO_ROOT}/${INFER_PY}" \
@@ -380,8 +417,12 @@ for spec in "${EXPERIMENTS[@]}"; do
     fi
 
     if [[ "${CLEANUP_EPOCH_CKPTS:-true}" == "true" ]]; then
-      find "${ckpt_dir}" -name "epoch_*.pt" -type f -delete 2>/dev/null || true
-      log "Cleaned up epoch checkpoints in ${ckpt_dir}, kept best.pt only."
+      if [[ -f "${ckpt_dir}/best.pt" ]]; then
+        find "${ckpt_dir}" -name "epoch_*.pt" -type f -delete 2>/dev/null || true
+        log "Cleaned up epoch checkpoints in ${ckpt_dir}, kept best.pt only."
+      else
+        log "best.pt missing in ${ckpt_dir}; keeping epoch checkpoints as fallback."
+      fi
     fi
 
     log "Done: ${run_name_full}"

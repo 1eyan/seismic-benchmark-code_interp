@@ -1,17 +1,17 @@
 experiment:
   name: interp_transformer_v9
-  output_dir: results
+  output_dir: /cloud/cloud-s3fs
   seed: 42
   device: cuda:1
 
 data:
   segy:
-    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
-    traces_per_shot: 201
+    path: /cloud/cloud-s3fs/seismic_shotper0.8.segy
+    traces_per_shot: 120
     time_downsample: 1
   test_ratio: 0.1
   loader:
-    batch_size: 12
+    batch_size: 14
     num_workers: 4
     pin_memory: true
 
@@ -33,7 +33,7 @@ preprocess:
   # Transformer 专属参数
   chunk_length: 256
   overlap_ratio: 0.125
-
+  skip: ["spherical_divergence_correction"]
 # -------------------------------------------------------
 # Model selection: uncomment the variant you want to use.
 # Default: V11 Encoder-Decoder (cross-attention decoder)
@@ -125,11 +125,6 @@ metrics:
     params: { data_range: 2.0, window_size: 11, sigma: 1.5 }
   - name: mse
     params: {}
-  - name: mae
-    params: {}
-  - name: mse
-    params: {}
-
 
 optim:
   type: adamw
@@ -143,7 +138,7 @@ scheduler:
     min_lr: 1.0e-6
 
 train:
-  epochs: 1000
+  epochs: 500
   grad_clip: 1.0
   log_step: false
   log_interval: 20
@@ -159,8 +154,8 @@ log:
 inference:
   data:
     segy:
-      path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots10-18.sgy
-      traces_per_shot: 201
+      path: /cloud/cloud-s3fs/seismic_shotper0.2.segy
+      traces_per_shot: 120
       time_downsample: 1
   checkpoint: null
   output_dir: null

@@ -353,6 +353,7 @@ class Liu2022WRDL(nn.Module):
         num_levels = len(enc_chs)
         if num_levels < 2:
             raise ValueError(f"Need at least 2 encoder levels, got {num_levels}.")
+        self._pad_multiple = 2 ** (num_levels - 1)
 
         if bottleneck_channels is None:
             bottleneck_channels = enc_chs[-1]
@@ -427,9 +428,11 @@ class Liu2022WRDL(nn.Module):
         """
         H_in, W_in = x.shape[-2], x.shape[-1]
 
-        # Reflect-pad to even spatial dims (DWT requires even sizes)
-        pad_h = (2 - H_in % 2) % 2
-        pad_w = (2 - W_in % 2) % 2
+        # Pad to a multiple of 2^(num_levels-1) so every DWT halving keeps even
+        # spatial dims (each encoder stage DWT halves H and W).
+        mult = self._pad_multiple
+        pad_h = (mult - H_in % mult) % mult
+        pad_w = (mult - W_in % mult) % mult
         if pad_h or pad_w:
             x = F.pad(x, (0, pad_w, 0, pad_h), mode="reflect")
 

@@ -126,7 +126,7 @@ def parse_args() -> argparse.Namespace:
         "--mask-mode",
         type=str,
         default=None,
-        choices=["uniform", "random", "continuous"],
+        choices=["uniform", "random", "continuous", "cfunet_random"],
         help="Trace masking mode. Must match training. Defaults to config preprocess.mask_mode.",
     )
     parser.add_argument(
@@ -250,8 +250,9 @@ def main() -> None:
     if "normalize" not in skip and not bool(prep.get("patch_normalize", False)):
         shots, stats = normalize(shots, mode=norm_mode, per=norm_scope)
 
-    # input = masked traces; target = unmasked (original) traces
-    if "mask_traces" not in skip:
+    # input = masked traces; target = unmasked (original) traces.
+    # cfunet_random masks per patch inside inference_on_shots (same as training).
+    if "mask_traces" not in skip and mask_mode != "cfunet_random":
         mask_kwargs: Dict[str, Any] = {"mode": mask_mode, "ratio": mask_ratio}
 
         if mask_mode == "uniform":
@@ -275,7 +276,7 @@ def main() -> None:
     overlap = float(prep.get("patch_overlap", 0.5))
 
     infer_start = time.time()
-    pred_norm = inference_on_shots(
+    infer_kwargs: Dict[str, Any] = dict(
         model=model,
         input_shots=masked_norm,
         patch_size=(patch_trace, patch_time),
@@ -286,7 +287,27 @@ def main() -> None:
         patch_norm_eps=float(prep.get("patch_norm_eps", 1e-6)),
         include_mask_channel=bool(prep.get("include_mask_channel", False)),
     )
-    mask_3d = np.broadcast_to(trace_mask[..., None], pred_norm.shape).copy()
+    missing_frac: Optional[np.ndarray] = None
+    if mask_mode == "cfunet_random" and "mask_traces" not in skip:
+        ratio_range = prep.get("mask_ratio_range") or (0.5, 0.875)
+        infer_kwargs.update(
+            mask_mode="cfunet_random",
+            mask_ratio_range=(float(ratio_range[0]), float(ratio_range[1])),
+            mask_seed=seed,
+            return_missing_mask=True,
+        )
+        pred_norm, missing_frac = inference_on_shots(**infer_kwargs)
+    else:
+        pred_norm = inference_on_shots(**infer_kwargs)
+
+    if missing_frac is not None:
+        # Overlap-weighted missing fraction per position; a trace counts as
+        # missing when a majority of the covering patches masked it.
+        mask_3d = np.broadcast_to(
+            (missing_frac.max(axis=2) >= 0.5)[..., None], pred_norm.shape
+        ).copy()
+    else:
+        mask_3d = np.broadcast_to(trace_mask[..., None], pred_norm.shape).copy()
     infer_elapsed = time.time() - infer_start
     print(f"Inference time: {infer_elapsed:.2f}s")
 
@@ -368,7 +389,11 @@ def main() -> None:
     # ------------------------------------------------------------------
     pred_shots = _inverse(recon_norm)
     target_shots = _inverse(shots_norm)
-    input_shots = _inverse(masked_norm)
+    if missing_frac is not None:
+        # Zero the masked traces so the saved input shows what the model saw.
+        input_shots = _inverse(np.where(mask_3d, 0.0, shots_norm))
+    else:
+        input_shots = _inverse(masked_norm)
 
     # ------------------------------------------------------------------
     # 7. Save outputs

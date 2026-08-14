@@ -15,18 +15,18 @@
 
 experiment:
   name: interp_park2022_cfunet_field_paper
-  output_dir: results
+  output_dir: /cloud/cloud-s3fs
   seed: 42
-  device: cuda:1
+  device: cuda:0
 
 data:
   segy:
-    path: /NAS/czt/mount/chengzhitong/data/MobilAVO_Viking_Graben/mobil_avo_viking_graben.sgy
+    path: /cloud/cloud-s3fs/seismic_shotper0.8.segy
     traces_per_shot: 120
     time_downsample: 1
   test_ratio: 0.1
   loader:
-    batch_size: 32          # paper-explicit
+    batch_size: 384         # paper-inferred (matching ANet field profile)
     num_workers: 4
     pin_memory: true
 
@@ -41,7 +41,7 @@ preprocess:
   patch_normalize: true
   patch_norm_eps: 1.0e-6
   patch_time: 128          # paper-explicit patch size (field, 128 x 120)
-  patch_trace: 120
+  patch_trace: 64
   patch_overlap: 0.5
   max_shots: null
 
@@ -86,7 +86,7 @@ scheduler:
   params: {}
 
 train:
-  epochs: 20               # paper-explicit (up to 20 epochs)
+  epochs: 80               # paper-explicit (up to 20 epochs)
   eval_interval: 1
   ckpt_interval: 5
   vis_interval: 5

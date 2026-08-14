@@ -10,33 +10,37 @@
 
 experiment:
   name: interp_li2022_caunet_field_paper
-  output_dir: results
+  output_dir: /cloud/cloud-s3fs
   seed: 42
-  device: cuda
+  device: cuda:0
 
 data:
   segy:
-    path: /NAS/czt/mount/chengzhitong/data/MobilAVO_Viking_Graben/mobil_avo_viking_graben.sgy
+    path: /cloud/cloud-s3fs/seismic_shotper0.8.segy
     traces_per_shot: 120
     time_downsample: 1
   test_ratio: 0.1
   loader:
-    batch_size: 8           # paper-inferred (matching ANet field profile)
+    batch_size: 256           # paper-inferred (matching ANet field profile)
     num_workers: 4
     pin_memory: true
 
 preprocess:
   mask_mode: continuous
-  mask_ratio_range: [0.1, 0.3]
-  dt: 0.004
+  mask_ratio: 0.1
+  dt: 0.002
   t0: 0.0
   spherical_power: 1.2
-  normalize_mode: minmax
+  uniform_stride: 2
+  normalize_mode: max_abs
   normalize_scope: global
-  patch_time: 720           # field patch size matching ANet
-  patch_trace: 120
+  patch_normalize: true
+  patch_norm_eps: 1.0e-6
+  patch_time: 384
+  patch_trace: 64
   patch_overlap: 0.5
   max_shots: null
+  skip: ["spherical_divergence_correction"]
 
 model:
   type: li2022_caunet
@@ -76,7 +80,7 @@ scheduler:
   params: {}
 
 train:
-  epochs: 20
+  epochs: 80
   grad_clip: null
   log_step: false
   log_interval: 20
@@ -92,11 +96,11 @@ log:
 inference:
   data:
     segy:
-      path: /NAS/czt/mount/chengzhitong/data/MobilAVO_Viking_Graben/mobil_avo_viking_graben.sgy
+      path: /cloud/cloud-s3fs/seismic_shotper0.2.segy
       traces_per_shot: 120
       time_downsample: 1
-  checkpoint: results/interp_li2022_caunet_field_paper/checkpoints/best.pt
-  output_dir: results/interp_li2022_caunet_field_paper/inference
+  checkpoint: /cloud/cloud-s3fs/interp_li2022_caunet_field_paper/checkpoints/best.pt
+  output_dir: /cloud/cloud-s3fs/interp_li2022_caunet_field_paper/inference
   n_viz_shots: 5
   device: 1
   batch_size: 4

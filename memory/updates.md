@@ -2,6 +2,56 @@
 
 > Chronological log of **important updates**. Record only: added/removed files, model-structure changes, loss/metric changes, dependency upgrades, API changes, critical bugfixes, open-source references. Trivia (typos, renames, reformatting) is **not** recorded.
 
+## 2026-08-14 - Sync with origin/main: adopt remote cfunet_random inference API
+- Context: origin/main gained commit 2a777b3 (cfunet_random inference via `return_missing_mask`, returning an overlap-weighted per-position missing fraction), while the working tree carried a parallel local implementation of the same feature (`return_mask` boolean API, superseding the 2026-08-13/14 entries below). Merging required picking one API for `inference_on_shots`.
+- Change:
+  - `utils/inference_utils.py` + `scripts/interpolation/inference_interpolation.py`: adopted the remote `return_missing_mask` implementation wholesale (fractional mask; boolean masks derived at the `>= 0.5` threshold), and retained the one local improvement: zeroing missing traces in the saved visualization input (`input_shots = _inverse(np.where(mask_3d, 0.0, shots_norm))` when `missing_frac` is present).
+  - Removed all tracked `__pycache__/*.pyc` files; `.gitignore` extended to ignore `configs/**/*.yaml` and `scripts/**/*.sh`.
+  - Committed the working-tree config/script changes (cloud paths, batch sizes, loop-script enhancements, Liu2022 WRDL DWT padding fix) alongside the sync.
+- Impact: One canonical cfunet_random inference path shared with origin/main; the local `return_mask` API no longer exists.
+- Follow-up: None.
+
+## 2026-08-14 - Fix IndexError in inference_on_shots mask reconstruction (cfunet_random)
+- Context: With `mask_mode="cfunet_random"` and `return_mask=True`, `inference_on_shots` crashed with `IndexError: too many indices for array` because `mask_traces` returns a per-trace mask `(P, patch_h)` (2D), but the code indexed it as 4D and passed it directly to `unpatchify_uniform`.
+- Change:
+  - `utils/inference_utils.py::inference_on_shots`: the returned trace mask is now broadcast over the patch time axis (`(P, patch_h, patch_w)`) before `unpatchify_uniform`, then collapsed back to a per-trace shot-level mask `(n_shots, n_traces)` via `max(axis=2)` (masked traces are constant along time). Docstring updated to document the `(n_shots, n_traces)` return shape, matching the `mask_shots[..., None]` broadcast in `inference_interpolation.py`.
+- Impact: CFunet-protocol inference runs end-to-end again; `mask_3d` construction in `inference_interpolation.py` is unchanged.
+- Follow-up: None.
+
+## 2026-08-13 - Support cfunet_random in the interpolation train/infer loop
+- Context: `train_infer_loop.sh` + `inference_interpolation.py` only supported shot-level uniform/random/continuous masking, while the park2022 CFunet configs use per-patch random masking (`mask_mode: cfunet_random` with `mask_ratio_range`). Running the loop against `park2022_cfunet_field_paper.yaml` either crashed training (`mask_ratio_range` + CLI-injected `continuous_missing_traces` conflict) or silently skipped inference (run-name suffix and output-dir mismatches).
+- Change:
+  - `utils/inference_utils.py::inference_on_shots` gains optional `mask_mode` / `mask_ratio_range` / `mask_seed` / `return_mask` params. With `mask_mode="cfunet_random"` it applies `mask_traces(mode="random", ratio_range=...)` per patch after patchify (same protocol as `train_interpolation_unet.py::_patchify_pairs`), and `return_mask=True` additionally returns the unpatchified shot-level missing mask (True = missing).
+  - `scripts/interpolation/inference_interpolation.py` accepts `--mask-mode cfunet_random`; for this mode it skips shot-level masking, delegates per-patch masking to `inference_on_shots` (mask rng seeded from `experiment.seed`), builds `mask_3d` from the returned patch masks, and zeroes missing traces for the visualization input.
+  - `scripts/interpolation/train_infer_loop.sh` accepts `cfunet_random:<low>-<high>` specs (ratio range stays in the YAML config; only `--mask-mode` is forwarded), emits the matching `cfunet_random_miss<lo>-<hi>` run suffix, and skips extra inference for this kind.
+  - `configs/interpolation/park2022_cfunet_field_paper.yaml`: `output_dir` changed to `/cloud/cloud-s3fs` to align with the loop's checkpoint/inference paths.
+- Impact: The loop can now run the paper CFunet protocol end-to-end with matching train/inference masks; `EXPERIMENTS=("cfunet_random:0.5-0.875")` reproduces the paper's 50%-87.5% per-patch random missing ratio.
+- Follow-up: Consider deriving checkpoint/inference paths from the experiment's dumped config instead of hard-coding `/cloud/cloud-s3fs` in the loop (same note as the 2026-08-13 U-Net loop entry).
+
+## 2026-08-13 - Sync transformer train/infer loop with the U-Net loop fixes
+- Context: `scripts/interpolation/train_infer_loop_transformer.sh` still hard-coded `${REPO_ROOT}/results/...` for checkpoint/inference paths while its default gated config uses `output_dir: /cloud/cloud-s3fs` (the same path-mismatch bug that made the U-Net loop skip inference), used `INFER_DEVICE=cuda:2`, and had unguarded epoch-checkpoint cleanup.
+- Change:
+  - Added `get_experiment_device` and `get_experiment_output_dir` helpers; `INFER_DEVICE` now defaults to the config's `experiment.device`, and checkpoint/inference paths are derived from the config's `experiment.output_dir` (relative paths resolved against the repo root).
+  - Replaced the cleanup block with the best.pt-guarded variant and added the `CLEANUP_EPOCH_CKPTS` env toggle (default true).
+  - Added `Output dir` / `INFER_DEVICE` log lines.
+- Impact: The transformer loop now works with both `output_dir: /cloud/cloud-s3fs` (gated) and `output_dir: results` (patch) configs; inference is no longer silently skipped due to path mismatch.
+- Follow-up: Apply the same config-derived path logic to the U-Net loop script to remove its hard-coded `/cloud/cloud-s3fs` paths.
+
+## 2026-08-13 - Re-add epoch checkpoint cleanup to interpolation train/infer loop
+- Context: `scripts/interpolation/train_infer_loop.sh` trained 21 liu2022 experiments but never ran inference because the script looked for checkpoints in `/cloud/cloud-s3fs/<name>/checkpoints` while the config's `experiment.output_dir` was still `results` (training saved to `results/<name>/checkpoints`). Every run logged "No checkpoint found; skipping inference". Also, users wanted to drop `epoch_*.pt` files after inference to save disk on the S3 mount (a checkpoint-save disk write failure occurred Aug 12 23:17).
+- Change:
+  - Restored the cleanup block removed in a previous edit: after both inference steps, if `CLEANUP_EPOCH_CKPTS` (default true) and `best.pt` exists, delete `epoch_*.pt` in `${ckpt_dir}`.
+  - Documented `CLEANUP_EPOCH_CKPTS` in the user-configuration section.
+- Impact: Each completed train+infer run now keeps only `best.pt` (plus logs/visualizations/inference outputs). Set `CLEANUP_EPOCH_CKPTS=false` to keep all epoch checkpoints.
+- Follow-up: Consider deriving the checkpoint/inference paths from the experiment's dumped `config.yaml` instead of hard-coding `/cloud/cloud-s3fs`.
+
+## 2026-08-12 - Fix Liu2022 WRDL DWT padding for non-multiple-of-16 inputs
+- Context: Training with `patch_trace: 120` (5 encoder levels, 4 DWT halvings) failed because the model only padded to even spatial dims, so the 4th DWT received odd `H=15`.
+- Change:
+  - `model/interpolation/liu2022_wrdl.py`: replaced the even-only reflect padding in `Liu2022WRDL.forward` with padding to a multiple of `2^(num_levels - 1)` (stored as `self._pad_multiple` in `__init__`), then cropped back to the original size.
+- Impact: The model now accepts any input whose dims need padding up to a multiple of 16 (e.g. 120 traces). Output size is unchanged; padding/cropping is transparent.
+- Follow-up: None.
+
 ## 2026-07-11 - Switch default visualization colormap to seismic
 - Context: Users requested seismic-style colormaps for all training and inference visualizations instead of the default grayscale.
 - Change:

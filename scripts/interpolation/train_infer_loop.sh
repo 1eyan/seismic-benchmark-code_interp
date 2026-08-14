@@ -12,6 +12,11 @@
 #        continuous:30tr
 #        continuous:40tr
 #
+#   3) per-patch random ratio range (paper CFunet protocol):
+#        cfunet_random:0.5-0.875
+#      The range is read from the YAML config's preprocess.mask_ratio_range;
+#      train and inference share the same protocol and seed convention.
+#
 # Recommended examples:
 #   EXPERIMENTS=("random:0.3" "uniform:0.5" "continuous:30tr")
 #
@@ -46,33 +51,28 @@ CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 MASTER_PORT="${MASTER_PORT:-auto}"
 TORCHRUN_EXTRA="${TORCHRUN_EXTRA:-}"
-
-#BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/chai2020_unet_paper.yaml}"
-#BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/li2022_caunet_seg_c3_paper.yaml}"/home/czt/seismic-benchmark-code_interp/configs/interpolation/liu2022_wrdl_conservative.yaml
-BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/liu2022_wrdl_conservative.yaml}"
-TRAIN_PY="${TRAIN_PY:-scripts/interpolation/train_interpolation_unet.py}" 
+BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/park2022_cfunet_field_paper.yaml}"
+#BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/yu2022_anet_field_paper.yaml}"
+TRAIN_PY="${TRAIN_PY:-scripts/interpolation/train_interpolation_unet.py}"
 INFER_PY="${INFER_PY:-scripts/interpolation/inference_interpolation.py}"
 
 # Unified experiment list.
 # Format:
 #   "<mask_mode>:<ratio>"      e.g., "random:0.3", "uniform:0.5", "continuous:0.3"
 #   "<mask_mode>:<N>tr"        e.g., "continuous:20tr"
+#   "cfunet_random:<lo>-<hi>"  e.g., "cfunet_random:0.5-0.875" (per-patch ratio
+#                              range; taken from the YAML config, train/infer
+#                              share the same protocol)
 #
 # Fixed trace count is only meaningful for continuous missing traces.
 EXPERIMENTS=(
-  "random:0.3"
-  "random:0.5"
-  "uniform:0.5"
-  "uniform:0.7"
-  "continuous:20tr"
-  "continuous:30tr"
-  "continuous:40tr"
+  "cfunet_random:0.5-0.875"
 )
 
 N_SEEDS=3
 START_SEED=42
 
-INFER_DEVICE="${INFER_DEVICE:-cuda:0}"
+INFER_DEVICE="${INFER_DEVICE:-}"
 RUN_INFERENCE=true
 RUN_EXTRA_INFERENCE=true
 
@@ -84,6 +84,10 @@ EXTRA_TRACES_STEP=10
 
 # If true, use best.pt when available; otherwise use latest epoch_*.pt.
 PREFER_BEST_CHECKPOINT=true
+
+# If true, delete epoch_*.pt after inference, keeping best.pt only
+# (only when best.pt exists).
+CLEANUP_EPOCH_CKPTS="${CLEANUP_EPOCH_CKPTS:-true}"
 
 # If true, only print commands.
 DRY_RUN=false
@@ -127,6 +131,14 @@ get_experiment_name() {
     | sed -E 's/[[:space:]]+#.*$//;s/[[:space:]]*$//'
 }
 
+get_experiment_device() {
+  local config_path="$1"
+  sed -n -E '/^experiment:/,/^[a-zA-Z_][a-zA-Z0-9_]*:/p' "${config_path}" \
+    | grep -m1 -E '^[[:space:]]*device:[[:space:]]*' \
+    | sed -E 's/^[[:space:]]*device:[[:space:]]*//' \
+    | sed -E 's/[[:space:]]+#.*$//;s/[[:space:]]*$//'
+}
+
 parse_experiment() {
   local spec="$1"
 
@@ -138,12 +150,31 @@ parse_experiment() {
   EXP_VALUE="${spec#*:}"
 
   case "${EXP_MASK_MODE}" in
-    uniform|random|continuous)
+    uniform|random|continuous|cfunet_random)
       ;;
     *)
-      die "Invalid mask mode: ${EXP_MASK_MODE}. Expected uniform, random, or continuous."
+      die "Invalid mask mode: ${EXP_MASK_MODE}. Expected uniform, random, continuous, or cfunet_random."
       ;;
   esac
+
+  if [[ "${EXP_MASK_MODE}" == "cfunet_random" ]]; then
+    # cfunet_random specs carry a ratio range "<low>-<high>" (e.g. 0.5-0.875).
+    # The range is taken from the YAML config (per-patch sampling); no CLI
+    # ratio flag exists for this mode.
+    if [[ ! "${EXP_VALUE}" =~ ^[0-9]*\.?[0-9]+-[0-9]*\.?[0-9]+$ ]]; then
+      die "cfunet_random spec must be '<low>-<high>' (e.g. 0.5-0.875), got: ${spec}"
+    fi
+    EXP_KIND="ratio_range"
+    EXP_RATIO_RANGE="${EXP_VALUE}"
+    EXP_MISSING_TRACES=""
+    EXP_MASK_RATIO=""
+
+    local lo="${EXP_RATIO_RANGE%-*}"
+    local hi="${EXP_RATIO_RANGE#*-}"
+    awk -v a="${lo}" -v b="${hi}" 'BEGIN { exit !(a > 0 && a <= b && b < 1) }' \
+      || die "cfunet_random range must satisfy 0 < low <= high < 1, got: ${EXP_RATIO_RANGE}"
+    return 0
+  fi
 
   if [[ "${EXP_VALUE}" =~ ^[0-9]+tr$ ]]; then
     EXP_KIND="fixed_traces"
@@ -170,6 +201,10 @@ parse_experiment() {
 run_suffix() {
   if [[ "${EXP_KIND}" == "fixed_traces" ]]; then
     echo "${EXP_MASK_MODE}_miss${EXP_MISSING_TRACES}tr"
+  elif [[ "${EXP_KIND}" == "ratio_range" ]]; then
+    local lo="${EXP_RATIO_RANGE%-*}"
+    local hi="${EXP_RATIO_RANGE#*-}"
+    echo "${EXP_MASK_MODE}_miss$(ratio_to_pct "${lo}")-$(ratio_to_pct "${hi}")"
   else
     local pct
     pct="$(ratio_to_pct "${EXP_MASK_RATIO}")"
@@ -180,6 +215,8 @@ run_suffix() {
 train_args() {
   if [[ "${EXP_KIND}" == "fixed_traces" ]]; then
     echo "--mask-mode ${EXP_MASK_MODE} --continuous-missing-traces ${EXP_MISSING_TRACES}"
+  elif [[ "${EXP_KIND}" == "ratio_range" ]]; then
+    echo "--mask-mode ${EXP_MASK_MODE}"
   else
     echo "--mask-mode ${EXP_MASK_MODE} --mask-ratio ${EXP_MASK_RATIO}"
   fi
@@ -192,6 +229,8 @@ infer_args() {
 
   if [[ "${kind}" == "fixed_traces" ]]; then
     echo "--mask-mode ${mode} --continuous-missing-traces ${value}"
+  elif [[ "${kind}" == "ratio_range" ]]; then
+    echo "--mask-mode ${mode}"
   else
     echo "--mask-mode ${mode} --mask-ratio ${value}"
   fi
@@ -231,6 +270,13 @@ export CUDA_VISIBLE_DEVICES
 NAME_BASE="$(get_experiment_name "${REPO_ROOT}/${BASE_CONFIG}")"
 [[ -n "${NAME_BASE}" ]] || die "Could not parse experiment.name from ${BASE_CONFIG}"
 
+# Default inference device to the experiment.device from the config
+# (e.g. cuda:0), so inference runs on the same GPU the model was trained on.
+if [[ -z "${INFER_DEVICE}" ]]; then
+  INFER_DEVICE="$(get_experiment_device "${REPO_ROOT}/${BASE_CONFIG}")"
+fi
+[[ -n "${INFER_DEVICE}" ]] || die "Could not parse experiment.device from ${BASE_CONFIG}; set INFER_DEVICE explicitly"
+
 TOTAL_RUNS=$(( ${#EXPERIMENTS[@]} * N_SEEDS ))
 run_idx=0
 
@@ -239,6 +285,7 @@ log "Base config: ${BASE_CONFIG}"
 log "Experiment base name: ${NAME_BASE}"
 log "Total runs: ${TOTAL_RUNS}"
 log "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+log "INFER_DEVICE=${INFER_DEVICE}"
 
 # ==============================================================================
 # Main loop
@@ -285,7 +332,7 @@ for spec in "${EXPERIMENTS[@]}"; do
       --config "${tmpcfg}" \
       "${train_args_array[@]}"
 
-    ckpt_dir="${REPO_ROOT}/results/${run_name_full}/checkpoints"
+    ckpt_dir="/cloud/cloud-s3fs/${run_name_full}/checkpoints"
     if ! checkpoint="$(find_checkpoint "${ckpt_dir}")"; then
       log "WARNING: No checkpoint found in ${ckpt_dir}; skipping inference."
       rm -f "${tmpcfg}"
@@ -296,12 +343,14 @@ for spec in "${EXPERIMENTS[@]}"; do
     if [[ "${RUN_INFERENCE}" == "true" ]]; then
       if [[ "${EXP_KIND}" == "fixed_traces" ]]; then
         infer_args_string="$(infer_args fixed_traces "${EXP_MASK_MODE}" "${EXP_MISSING_TRACES}")"
+      elif [[ "${EXP_KIND}" == "ratio_range" ]]; then
+        infer_args_string="$(infer_args ratio_range "${EXP_MASK_MODE}" "${EXP_RATIO_RANGE}")"
       else
         infer_args_string="$(infer_args ratio "${EXP_MASK_MODE}" "${EXP_MASK_RATIO}")"
       fi
       read -r -a infer_args_array <<< "${infer_args_string}"
 
-      infer_out="${REPO_ROOT}/results/${run_name_full}/inference"
+      infer_out="/cloud/cloud-s3fs/${run_name_full}/inference"
 
       log "Inference started: matching training missing setting."
       run_cmd python "${REPO_ROOT}/${INFER_PY}" \
@@ -313,7 +362,9 @@ for spec in "${EXPERIMENTS[@]}"; do
     fi
 
     if [[ "${RUN_EXTRA_INFERENCE}" == "true" ]]; then
-      if [[ "${EXP_KIND}" == "fixed_traces" ]]; then
+      if [[ "${EXP_KIND}" == "ratio_range" ]]; then
+        log "Extra inference skipped for cfunet_random (per-patch ratio range is fixed by the config)."
+      elif [[ "${EXP_KIND}" == "fixed_traces" ]]; then
         extra_kind="fixed_traces"
         extra_value=$((EXP_MISSING_TRACES + EXTRA_TRACES_STEP))
         extra_suffix="miss${extra_value}tr"
@@ -323,23 +374,29 @@ for spec in "${EXPERIMENTS[@]}"; do
         extra_suffix="ratio$(ratio_to_pct "${extra_value}")"
       fi
 
-      extra_args_string="$(infer_args "${extra_kind}" "${EXP_MASK_MODE}" "${extra_value}")"
-      read -r -a extra_args_array <<< "${extra_args_string}"
+      if [[ "${EXP_KIND}" != "ratio_range" ]]; then
+        extra_args_string="$(infer_args "${extra_kind}" "${EXP_MASK_MODE}" "${extra_value}")"
+        read -r -a extra_args_array <<< "${extra_args_string}"
 
-      infer_out_extra="${REPO_ROOT}/results/${run_name_full}/inference_${extra_suffix}"
+        infer_out_extra="/cloud/cloud-s3fs/${run_name_full}/inference_${extra_suffix}"
 
-      log "Extra inference started: missing=${extra_value}."
-      run_cmd python "${REPO_ROOT}/${INFER_PY}" \
-        --config "${tmpcfg}" \
-        --checkpoint "${checkpoint}" \
-        --output-dir "${infer_out_extra}" \
-        "${extra_args_array[@]}" \
-        --device "${INFER_DEVICE}"
+        log "Extra inference started: missing=${extra_value}."
+        run_cmd python "${REPO_ROOT}/${INFER_PY}" \
+          --config "${tmpcfg}" \
+          --checkpoint "${checkpoint}" \
+          --output-dir "${infer_out_extra}" \
+          "${extra_args_array[@]}" \
+          --device "${INFER_DEVICE}"
+      fi
     fi
 
     if [[ "${CLEANUP_EPOCH_CKPTS:-true}" == "true" ]]; then
-      find "${ckpt_dir}" -name "epoch_*.pt" -type f -delete 2>/dev/null || true
-      log "Cleaned up epoch checkpoints in ${ckpt_dir}, kept best.pt only."
+      if [[ -f "${ckpt_dir}/best.pt" ]]; then
+        find "${ckpt_dir}" -name "epoch_*.pt" -type f -delete 2>/dev/null || true
+        log "Cleaned up epoch checkpoints in ${ckpt_dir}, kept best.pt only."
+      else
+        log "best.pt missing in ${ckpt_dir}; keeping epoch checkpoints as fallback."
+      fi
     fi
 
     log "Done: ${run_name_full}"

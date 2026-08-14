@@ -13,20 +13,21 @@
 
 experiment:
   name: interp_liu2022_wrdl_conservative
-  output_dir: results
+  output_dir: /cloud/cloud-s3fs
   seed: 42
-  device: cuda:1
+  device: cuda:0
 
 data:
   segy:
-    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
-    traces_per_shot: 201
+    path: /cloud/cloud-s3fs/seismic_shotper0.8.segy
+    traces_per_shot: 120
     time_downsample: 1
   test_ratio: 0.1
   loader:
-    batch_size: 96          # reproduction-assumption
+    batch_size: 128           # paper-inferred (matching ANet field profile)
     num_workers: 4
     pin_memory: true
+
 
 preprocess:
   mask_mode: continuous
@@ -40,7 +41,7 @@ preprocess:
   patch_normalize: true
   patch_norm_eps: 1.0e-6
   patch_time: 256
-  patch_trace: 128
+  patch_trace: 120
   patch_overlap: 0.5
   max_shots: null
 
