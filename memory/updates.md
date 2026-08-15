@@ -2,19 +2,18 @@
 
 > Chronological log of **important updates**. Record only: added/removed files, model-structure changes, loss/metric changes, dependency upgrades, API changes, critical bugfixes, open-source references. Trivia (typos, renames, reformatting) is **not** recorded.
 
-## 2026-08-15 - Merge origin/main 96e1b92 into the CFunet sync commit
-- Context: origin/main gained 96e1b92 (cfunet loop: N_SEEDS default 1 -> 3; extra-inference suffix now includes the mask mode so random:0.5 and uniform:0.5 generalization runs no longer collide on inference_ratio60). Its hunks did not overlap the local output_dir refactor, so the 3-way merge was clean.
-- Change: adopted the remote N_SEEDS=3 default and the mode-qualified extra suffix alongside the local experiment.output_dir derivation.
-- Impact: train_infer_loop_cfunet.sh carries both fixes; extra inference dirs are unique per mode and per seed.
+## 2026-08-15 - cfunet continuous: one model per level (training mask count == inference)
+- Context: `train_infer_loop_cfunet.sh` Family B trained a single continuous model from `mask_ratio: 0.1` (~13 missing traces per 128-trace patch) and then evaluated it on `continuous:20tr/30tr/40tr` (fixed shot-level counts), so the training missing count never matched inference. User decision: "每级一个模型" — each level (20tr/30tr/40tr) trains its own model with the same missing count as inference.
+- Change:
+  - `scripts/interpolation/train_infer_loop_cfunet.sh`: Family B restructured to loop levels (outer) x seeds (inner); `train_family` gained an optional 5th arg `continuous_missing_traces` passed through as `--continuous-missing-traces N` (overriding the config's `mask_ratio` via the existing CLI injection in `train_interpolation_unet.py`). Removed hardcoded `CONTINUOUS_SUFFIX`; per-level suffix now from `run_suffix()` (`continuous_miss{N}tr`), matching `main()`'s experiment-name suffix. `TOTAL_TRAIN_RUNS` updated to `N_SEEDS + |CONTINUOUS_EVAL| * N_SEEDS`. Checkpoint checks in `train_family`/`run_inference` now skip under `DRY_RUN=true` so the dry-run previews all commands instead of dying on the first missing checkpoint.
+- Impact: cfunet continuous training now masks the same fixed number of traces as its matching inference level. No shared train/inference code or configs changed; per-patch vs per-shot granularity (shared `_patchify_pairs`) intentionally left as-is.
 - Follow-up: None.
 
-## 2026-08-15 - Sync all Park2022 CFunet configs to the cloud data/output paths
-- Context: Only park2022_cfunet_field_paper.yaml used the cloud machine paths; the other seven Park2022 configs still pointed at /NAS SEGC3 data (traces_per_shot 201, output_dir results, device cuda:1), so they could not run on the cloud machine, and patch_trace 128 was invalid for 120-trace cloud data (also breaks 4-level fourier upsampling divisibility).
+## 2026-08-15 - Fix cfunet train/infer loop: inference skipped (captured stdout corrupted exp dir name)
+- Context: `train_infer_loop_cfunet.sh` calls `exp_random="$(train_family ...)"`. `train_family` prints `log "Training: ..."`, `run_cmd`'s `+ torchrun ...` line, and torchrun's full training log (`logger.info` -> `print` -> stdout) to stdout, so command substitution captured all of it: `exp_random` became a multi-line string with the dir name only on the last line. `run_inference` then built `exp_dir="${REPO_ROOT}/results/${exp_dir_name}"` from that corrupted value, so `find_checkpoint` failed ("No checkpoint found in .../checkpoints.") even though `best.pt` existed, and inference was skipped after every training run.
 - Change:
-  - All park2022_*.yaml: output_dir -> /cloud/cloud-s3fs, data.segy.path -> /cloud/cloud-s3fs/seismic_shotper0.8.segy, traces_per_shot -> 120, device -> cuda:0, batch_size -> 128 (smoke keeps 2), patch_trace -> 64 (paper_alignment patch_size lines marked repository-adaptation).
-  - scripts/interpolation/train_infer_loop_cfunet.sh: added get_experiment_output_dir; checkpoint/config/inference dirs now derive from experiment.output_dir instead of hard-coded results/.
-  - run_batch_best_inference.sh / centralize_best_params.sh / collect_inference_results.py: default results root changed from results to /cloud/cloud-s3fs.
-- Impact: The CFunet family (cfunet_random + continuous) is fully runnable on the cloud machine with uniform data/output conventions.
+  - `scripts/interpolation/train_infer_loop_cfunet.sh`: `log()` and `run_cmd()` now write to stderr (`>&2`, including the invoked command's stdout), so `train_family`'s stdout carries only the final `echo "${exp_dir_name}"`.
+- Impact: Inference runs again after training; command substitution captures only the experiment dir name.
 - Follow-up: None.
 
 ## 2026-08-15 - Fast-forward to origin/main 3163a38; fix baseline loop default config

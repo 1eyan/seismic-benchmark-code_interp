@@ -4,13 +4,14 @@
 # Scenario -> training mask mapping (per user requirement):
 #   random missing   -> trained with cfunet_random  (paper per-patch protocol)
 #   uniform missing  -> trained with cfunet_random  (shares the same model)
-#   continuous missing-> trained with continuous    (matches other models)
+#   continuous missing-> trained with one model per level (20tr/30tr/40tr)
 #
 # This script runs the two training families back-to-back (batched by family):
 #   Family A: trains cfunet_random  (park2022_cfunet_paper.yaml) for every
 #             seed, then evaluates each on random + uniform shot-level masks;
-#   Family B: trains continuous     (park2022_cfunet_continuous.yaml) for every
-#             seed, then evaluates each on continuous shot-level masks.
+#   Family B: trains one continuous model per level (20tr/30tr/40tr) with
+#             --continuous-missing-traces matching inference, then evaluates
+#             each model on its matching continuous shot-level mask.
 #
 # Inference resolves the checkpoint and the exact training-time config from the
 # experiment directory (<experiment.output_dir>/<exp>/config.yaml +
@@ -82,16 +83,16 @@ DRY_RUN="${DRY_RUN:-false}"
 # train_interpolation_unet.py main().  These must stay in sync with the mask
 # settings in the two configs above:
 #   cfunet_random: mask_ratio_range [0.5, 0.875] -> cfunet_random_miss50-88
-#   continuous:    mask_ratio 0.1                -> continuous_miss10
+#   continuous:    --continuous-missing-traces N  -> continuous_miss{N}tr
+#                  (one model per level; config mask_ratio is overridden via CLI)
 CFUNET_RANDOM_SUFFIX="cfunet_random_miss50-88"
-CONTINUOUS_SUFFIX="continuous_miss10"
 
 # ==============================================================================
 # Helper functions
 # ==============================================================================
 
 log() {
-  echo "[$(date -Iseconds)] $*"
+  echo "[$(date -Iseconds)] $*" >&2
 }
 
 die() {
@@ -100,9 +101,9 @@ die() {
 }
 
 run_cmd() {
-  echo "+ $*"
+  echo "+ $*" >&2
   if [[ "${DRY_RUN}" != "true" ]]; then
-    "$@"
+    "$@" >&2
   fi
 }
 
@@ -219,6 +220,7 @@ train_family() {
   local base_name="$2"     # experiment.name parsed from the config
   local suffix="$3"        # training-mask suffix appended by the train script
   local seed="$4"
+  local continuous_missing_traces="${5:-}"  # optional fixed contiguous missing count
 
   local tmpcfg
   tmpcfg="$(mktemp)"
@@ -245,14 +247,20 @@ train_family() {
     master_port="${MASTER_PORT}"
   fi
 
-  log "Training: ${config_path} -> ${exp_dir}"
+  local extra_train_args=()
+  if [[ -n "${continuous_missing_traces}" ]]; then
+    extra_train_args+=(--continuous-missing-traces "${continuous_missing_traces}")
+  fi
+
+  log "Training: ${config_path} -> ${exp_dir_name}"
   run_cmd torchrun ${TORCHRUN_EXTRA} \
     --nproc_per_node="${NPROC_PER_NODE}" \
     --master_port="${master_port}" \
     "${REPO_ROOT}/${TRAIN_PY}" \
-    --config "${tmpcfg}"
+    --config "${tmpcfg}" \
+    "${extra_train_args[@]}"
 
-  if ! find_checkpoint "${ckpt_dir}" > /dev/null; then
+  if [[ "${DRY_RUN}" != "true" ]] && ! find_checkpoint "${ckpt_dir}" > /dev/null; then
     rm -f "${tmpcfg}"
     die "No checkpoint found in ${ckpt_dir}; training failed or produced no checkpoint."
   fi
@@ -272,8 +280,12 @@ run_inference() {
 
   local config_yaml="${exp_dir}/config.yaml"
   local checkpoint
-  checkpoint="$(find_checkpoint "${exp_dir}/checkpoints")" \
-    || die "No checkpoint found in ${exp_dir}/checkpoints."
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    checkpoint="${exp_dir}/checkpoints/best.pt"
+  else
+    checkpoint="$(find_checkpoint "${exp_dir}/checkpoints")" \
+      || die "No checkpoint found in ${exp_dir}/checkpoints."
+  fi
 
   local out_dir="${exp_dir}/inference_${out_suffix}"
 
@@ -305,7 +317,7 @@ NAME_CONTINUOUS="$(get_experiment_name "${REPO_ROOT}/${CONTINUOUS_CONFIG}")"
 [[ -n "${NAME_CONTINUOUS}" ]] || die "Could not parse experiment.name from ${CONTINUOUS_CONFIG}"
 
 if [[ "${RUN_CONTINUOUS}" == "true" ]]; then
-  TOTAL_TRAIN_RUNS=$(( 2 * N_SEEDS ))
+  TOTAL_TRAIN_RUNS=$(( N_SEEDS + ${#CONTINUOUS_EVAL[@]} * N_SEEDS ))
 else
   TOTAL_TRAIN_RUNS=$(( N_SEEDS ))
 fi
@@ -361,39 +373,40 @@ for ((i = 0; i < N_SEEDS; i++)); do
   echo ""
 done
 
-# ---- Family B: continuous (all seeds; serves continuous eval) ----
+# ---- Family B: continuous (one model per level; training mask == inference) ----
 if [[ "${RUN_CONTINUOUS}" == "true" ]]; then
-  for ((i = 0; i < N_SEEDS; i++)); do
-    seed=$((START_SEED + i))
+  for spec in "${CONTINUOUS_EVAL[@]}"; do
+    parse_experiment "${spec}"
+    level_traces="${EXP_MISSING_TRACES}"
+    level_suffix="$(run_suffix)"
 
-    run_idx=$((run_idx + 1))
-    log "================================================================"
-    log "[train ${run_idx}/${TOTAL_TRAIN_RUNS}] continuous seed=${seed}"
-    log "================================================================"
+    for ((i = 0; i < N_SEEDS; i++)); do
+      seed=$((START_SEED + i))
 
-    exp_continuous="$(train_family "${CONTINUOUS_CONFIG}" "${NAME_CONTINUOUS}" "${CONTINUOUS_SUFFIX}" "${seed}")"
+      run_idx=$((run_idx + 1))
+      log "================================================================"
+      log "[train ${run_idx}/${TOTAL_TRAIN_RUNS}] continuous:${level_traces}tr seed=${seed}"
+      log "================================================================"
 
-    if [[ "${RUN_INFERENCE}" == "true" || "${RUN_EXTRA_INFERENCE}" == "true" ]]; then
-      for spec in "${CONTINUOUS_EVAL[@]}"; do
-        parse_experiment "${spec}"
-        suffix="$(run_suffix)"
+      exp_continuous="$(train_family "${CONTINUOUS_CONFIG}" "${NAME_CONTINUOUS}" "${level_suffix}" "${seed}" "${level_traces}")"
 
+      if [[ "${RUN_INFERENCE}" == "true" || "${RUN_EXTRA_INFERENCE}" == "true" ]]; then
         if [[ "${RUN_INFERENCE}" == "true" ]]; then
-          run_inference "${exp_continuous}" "${spec}" "${suffix}" \
-            "${EXP_KIND}" "${EXP_MASK_MODE}" "${EXP_MISSING_TRACES}"
+          run_inference "${exp_continuous}" "${spec}" "${level_suffix}" \
+            "${EXP_KIND}" "${EXP_MASK_MODE}" "${level_traces}"
         fi
 
         if [[ "${RUN_EXTRA_INFERENCE}" == "true" ]]; then
           extra_kind="fixed_traces"
-          extra_value=$((EXP_MISSING_TRACES + EXTRA_TRACES_STEP))
+          extra_value=$((level_traces + EXTRA_TRACES_STEP))
           extra_suffix="miss${extra_value}tr"
           run_inference "${exp_continuous}" "${spec}" "${extra_suffix}" \
             "${extra_kind}" "${EXP_MASK_MODE}" "${extra_value}"
         fi
-      done
-    fi
+      fi
 
-    echo ""
+      echo ""
+    done
   done
 fi
 
