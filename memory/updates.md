@@ -1146,3 +1146,86 @@
   documented reproduction-assumptions. Validation masking shares the train
   ratio range; `park2022_cfunet_eval75.yaml` reproduces the paper's fixed-75%
   validation.
+
+## 2026-08-15 - Repoint interpolation configs/scripts from field to SEGC3
+
+- Context: User runs the 6-model interpolation benchmark on SEGC3 locally and
+  field (Mobil AVO `seismic_shotper0.8.segy`) on a separate machine. Two prior
+  commits (`0928577`, `f6e40d9`) had re-pointed several configs and the loop
+  scripts to `/cloud/cloud-s3fs` field data, leaving the designated models
+  mixed field/SEGC3. This change makes the repo SEGC3-only.
+- Changes (all interpolation, no hyperparams touched except trace-coupled
+  patch sizes):
+  - `configs/interpolation/*.yaml`: `output_dir /cloud/cloud-s3fs -> results`,
+    `data.segy.path` + `inference.data.segy.path` field SEG-Y -> SEGC3
+    (`SEG_45Shot_shots1-9.sgy` train / `shots10-18.sgy` infer),
+    `traces_per_shot 120 -> 201`, placeholder
+    `/path/to/mobil_avo_viking_graben_line12.sgy -> SEGC3` train path.
+  - `patch_trace` restored to 128 for the 7 `park2022_cfunet_*` configs and
+    `liu2022_wrdl_conservative` (field-ification had forced 64/120 to fit
+    120-trace shots); field-profile configs (`*_field_paper.yaml`) keep their
+    field patch sizes (their paths are now SEGC3 but they are orphaned).
+  - `scripts/interpolation/train_infer_loop.sh` hard-coded
+    `/cloud/cloud-s3fs/<name>/checkpoints` + `.../inference` -> `results/...`.
+  - `run_batch_best_inference.sh`, `centralize_best_params.sh`,
+    `collect_inference_results.py`, `inference_interpolation_loop.sh`:
+    default RESULTS_ROOT `/cloud/cloud-s3fs` -> `results`.
+  - `rerun_uniform07.sh` MODEL_KEYS: `li2022_caunet_field_paper ->
+    li2022_caunet_seg_c3_paper`, `yu2022_anet_field_paper ->
+    yu2022_anet_seg_c3_paper`, `park2022_cfunet_field_paper ->
+    park2022_cfunet_paper`.
+- Left untouched (out of interpolation scope / separate datasets):
+  `configs/interpolation_avo/` + `scripts/interpolation_avo/` (Mobil AVO
+  `SEGMobil/seismic.segy` + `0605/0804_results` cloud roots) and generic
+  `/path/to/` placeholders in `ground_roll_attenuation` / `first_break_picking`
+  / `multiples_attenuation` READMEs.
+
+## 2026-08-19 - Batch inference sourced from collected/ + xlsx auto-fill
+
+- Context: User plans a batch best.pt inference run and wants results written
+  into `batch_evaluation_part.xlsx` (which already holds a "Multiples" sheet of
+  32 columns). The centralized `collected/` tree
+  (`collected/configs/*.yaml` one YAML per experiment/seed,
+  `collected/params/<name>.pt`, `collected/<name>/inference/` outputs) becomes
+  the single source for both inference and the Excel fill.
+- Changes:
+  - `scripts/interpolation/run_batch_best_inference.sh` repointed to iterate
+    `collected/configs/*.yaml` directly (one job per config that has a matching
+    `collected/params/<name>.pt`), seed parsed from the name via
+    `sed -nE 's/.*_seed([0-9]+)_.*/\1/p'`, outputs to
+    `collected/<name>/inference/`. Still picks the inference script by
+    `model.type` (`gated_transformer_v9*` -> transformer script, else UNet
+    script) and keeps the `INFERENCE_SUCCESS` resumability marker
+    (`FORCE=true` to redo). Device settable via env `INFER_DEVICE` or
+    positional arg 4 (`[CONFIG_DIR] [PARAMS_DIR] [COLLECT_ROOT] [DEVICE]`).
+  - New `scripts/interpolation/fill_batch_evaluation_xlsx.py`: groups configs by
+    setting (seed stripped -> `_seedN_`), aggregates per-seed
+    `collected/<name>/inference/metrics_summary.json` as mean±std, derives
+    RMSE = sqrt(MSE), uppercases JSON keys to match the workbook column names,
+    leaves `FREQUENCY_RANGE_HZ` columns as "—", writes an "Interpolation" sheet
+    into `batch_evaluation_part.xlsx` (preserving existing sheets), counts
+    Parameters (M) from the checkpoint state_dict (cached per model.type).
+  - `guo2023_mst` dropped from the evaluation set (configs under
+    `collected/configs/` removed).
+- Impact: Batch inference + Excel fill are now a collected/->xlsx pipeline. 132
+  configs remain in `collected/configs/` (46 settings across seeds 42/43/44);
+  fill program default seeds "42 43 44".
+
+## 2026-08-19 - Live per-batch progress in inference loops
+
+- Context: Each batch-inference job (~3 min) printed nothing between "Using
+  device"/"Model parameters" and "Inference time", so the batch log looked hung
+  while running. Added live progress ticks.
+- Changes:
+  - `utils/inference_utils.py::inference_on_shots`: `enumerate(loader)` loop now
+    prints `inference: <bi>/<total> batches (<pct>%)` with `flush=True` on a
+    ~20-step cadence. Shared util, so interpolation UNet, all
+    `random_noise_suppression` scripts, `ground_roll_attenuation`/`multiples
+    _attenuation` `batch_evaluate.py` all gain live progress.
+  - `scripts/interpolation/inference_interpolation_transformer.py::
+    inference_on_shots_transformer`: per-shot-batch progress with `flush=True`
+    in the chunk/unchunk loop (gated transformers).
+  - `scripts/interpolation/run_batch_best_inference.sh`: `python -> python -u`
+    so the whole inference stdout is unbuffered through the `tee` pipeline.
+- Impact: batch log now refreshes in real time during inference; no stdout-
+  capture dependency in tests (none reference `inference_on_shots`).

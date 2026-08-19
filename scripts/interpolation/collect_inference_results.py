@@ -59,7 +59,7 @@ def parse_args() -> argparse.Namespace:
             "files, and emit summary.csv / manifest.csv / failures.txt."
         )
     )
-    parser.add_argument("--results-root", type=str, default="/cloud/cloud-s3fs")
+    parser.add_argument("--results-root", type=str, default="results")
     parser.add_argument("--collect-root", type=str, default="collected")
     parser.add_argument("--summary-out", type=str, default=None)
     parser.add_argument("--manifest-out", type=str, default=None)

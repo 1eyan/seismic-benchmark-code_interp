@@ -10,7 +10,7 @@ set -uo pipefail
 export CUDA_VISIBLE_DEVICES="0"
 
 # 实验结果根目录
-RESULTS_ROOT="../../../cloud/cloud-s3fs/0614_results"
+RESULTS_ROOT="results"
 
 # 重新推理结果保存根目录
 OUTPUT_ROOT="/home/reinference"

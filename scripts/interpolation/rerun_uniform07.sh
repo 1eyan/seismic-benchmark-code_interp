@@ -30,12 +30,12 @@ log() {
 # Each entry drives one model. The driver function maps the key to the correct
 # loop script + config + overrides.
 MODEL_KEYS=(
-  transformer_v9
-  chai2020_unet_paper
+  #transformer_v9
+  #chai2020_unet_paper
   liu2022_wrdl_conservative
-  li2022_caunet_field_paper
-  yu2022_anet_field_paper
-  park2022_cfunet_field_paper
+  li2022_caunet_seg_c3_paper
+  yu2022_anet_seg_c3_paper
+  #park2022_cfunet_paper
 )
 
 if [[ -n "${MODELS:-}" ]]; then
@@ -78,25 +78,25 @@ for key in "${MODEL_KEYS[@]}"; do
           BASE_CONFIG="configs/interpolation/liu2022_wrdl_conservative.yaml" \
           bash "${SCRIPT_DIR}/train_infer_loop.sh"
       ;;
-    li2022_caunet_field_paper)
+    li2022_caunet_seg_c3_paper)
       run_loop "${key}" \
         env EXPERIMENTS_OVERRIDE="uniform:0.7" \
-          BASE_CONFIG="configs/interpolation/li2022_caunet_field_paper.yaml" \
+          BASE_CONFIG="configs/interpolation/li2022_caunet_seg_c3_paper.yaml" \
           bash "${SCRIPT_DIR}/train_infer_loop.sh"
       ;;
-    yu2022_anet_field_paper)
+    yu2022_anet_seg_c3_paper)
       run_loop "${key}" \
         env EXPERIMENTS_OVERRIDE="uniform:0.7" \
-          BASE_CONFIG="configs/interpolation/yu2022_anet_field_paper.yaml" \
+          BASE_CONFIG="configs/interpolation/yu2022_anet_seg_c3_paper.yaml" \
           bash "${SCRIPT_DIR}/train_infer_loop.sh"
       ;;
-    park2022_cfunet_field_paper)
+    park2022_cfunet_paper)
       # cfunet runs separately: only the cfunet_random family (serves the
       # uniform eval), continuous family disabled.
       run_loop "${key}" \
         env RANDOM_UNIFORM_EVAL_OVERRIDE="uniform:0.7" \
           RUN_CONTINUOUS=false \
-          CFUNET_RANDOM_CONFIG="configs/interpolation/park2022_cfunet_field_paper.yaml" \
+          CFUNET_RANDOM_CONFIG="configs/interpolation/park2022_cfunet_paper.yaml" \
           bash "${SCRIPT_DIR}/train_infer_loop_cfunet.sh"
       ;;
     *)

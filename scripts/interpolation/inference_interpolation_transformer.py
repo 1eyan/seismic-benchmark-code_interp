@@ -115,9 +115,11 @@ def inference_on_shots_transformer(
     was_training = model.training
     model.eval()
 
+    n_batches = (n_shots + batch_size - 1) // batch_size
+    progress_step = max(1, n_batches // 20)
     try:
         with torch.no_grad():
-            for i in range(0, n_shots, batch_size):
+            for bi, i in enumerate(range(0, n_shots, batch_size), start=1):
                 batch_masked = masked_shots[i: i + batch_size]
                 batch_coords = coords[i: i + batch_size]
 
@@ -137,6 +139,12 @@ def inference_on_shots_transformer(
                 pred_np = pred_tok.cpu().numpy()
                 recon = trace_time_unchunk(pred_np, chunk_info)
                 all_recon.append(recon)
+                if bi % progress_step == 0 or bi == n_batches:
+                    print(
+                        f"  inference: {bi}/{n_batches} shot-batches "
+                        f"({100.0 * bi / n_batches:.0f}%)",
+                        flush=True,
+                    )
     finally:
         if was_training:
             model.train()

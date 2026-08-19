@@ -347,7 +347,7 @@ for spec in "${EXPERIMENTS[@]}"; do
       --config "${tmpcfg}" \
       "${train_args_array[@]}"
 
-    ckpt_dir="/cloud/cloud-s3fs/${run_name_full}/checkpoints"
+    ckpt_dir="results/${run_name_full}/checkpoints"
     if ! checkpoint="$(find_checkpoint "${ckpt_dir}")"; then
       log "WARNING: No checkpoint found in ${ckpt_dir}; skipping inference."
       rm -f "${tmpcfg}"
@@ -365,7 +365,7 @@ for spec in "${EXPERIMENTS[@]}"; do
       fi
       read -r -a infer_args_array <<< "${infer_args_string}"
 
-      infer_out="/cloud/cloud-s3fs/${run_name_full}/inference"
+      infer_out="results/${run_name_full}/inference"
 
       log "Inference started: matching training missing setting."
       run_cmd python "${REPO_ROOT}/${INFER_PY}" \
@@ -393,7 +393,7 @@ for spec in "${EXPERIMENTS[@]}"; do
         extra_args_string="$(infer_args "${extra_kind}" "${EXP_MASK_MODE}" "${extra_value}")"
         read -r -a extra_args_array <<< "${extra_args_string}"
 
-        infer_out_extra="/cloud/cloud-s3fs/${run_name_full}/inference_${extra_suffix}"
+        infer_out_extra="results/${run_name_full}/inference_${extra_suffix}"
 
         log "Extra inference started: missing=${extra_value}."
         run_cmd python "${REPO_ROOT}/${INFER_PY}" \

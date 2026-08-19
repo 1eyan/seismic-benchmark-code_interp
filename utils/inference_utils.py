@@ -193,9 +193,11 @@ def inference_on_shots(
     model.eval()
     preds: List[torch.Tensor] = []
 
+    n_batches = len(loader)
+    progress_step = max(1, n_batches // 20)
     try:
         with torch.no_grad():
-            for batch_items in loader:
+            for bi, batch_items in enumerate(loader, start=1):
                 if needs_mask_kwarg:
                     batch, batch_mask = batch_items
                     batch = batch.to(device, non_blocking=True)
@@ -206,6 +208,12 @@ def inference_on_shots(
                     batch = batch.to(device, non_blocking=True)
                     out = model(batch)
                 preds.append(out.cpu())
+                if bi % progress_step == 0 or bi == n_batches:
+                    print(
+                        f"  inference: {bi}/{n_batches} batches "
+                        f"({100.0 * bi / n_batches:.0f}%)",
+                        flush=True,
+                    )
     finally:
         if was_training:
             model.train()

@@ -70,3 +70,5 @@ configs/**/*.yml
 # Shell scripts
 scripts/**/*.sh
 scripts/**/*.bash
+
+/collected/

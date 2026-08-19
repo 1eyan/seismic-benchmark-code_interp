@@ -63,10 +63,10 @@ CONTINUOUS_EVAL=(
   "continuous:40tr"
 )
 
-N_SEEDS="${N_SEEDS:-3}"
-START_SEED="${START_SEED:-42}"
+N_SEEDS="${N_SEEDS:-2}"
+START_SEED="${START_SEED:-43}"
 
-INFER_DEVICE="${INFER_DEVICE:-cuda:0}"
+INFER_DEVICE="${INFER_DEVICE:-cuda:1}"
 RUN_INFERENCE="${RUN_INFERENCE:-true}"
 RUN_EXTRA_INFERENCE="${RUN_EXTRA_INFERENCE:-true}"
 RUN_CONTINUOUS="${RUN_CONTINUOUS:-true}"
@@ -289,7 +289,7 @@ run_inference() {
 
   local out_dir="${exp_dir}/inference_${out_suffix}"
 
-  log "Inference: ${exp_dir_name} spec=${spec}"
+  log "Inference: ${exp_dir} spec=${spec}"
   run_cmd python "${REPO_ROOT}/${INFER_PY}" \
     --config "${config_yaml}" \
     --checkpoint "${checkpoint}" \

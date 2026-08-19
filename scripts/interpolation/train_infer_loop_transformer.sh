@@ -77,15 +77,21 @@ INFER_PY=""
 #   "<mask_mode>:<N>tr"        e.g., "continuous:20tr"
 #
 # Fixed trace count is only meaningful for continuous missing traces.
-EXPERIMENTS=(
-  #"random:0.3"
- #"random:0.5"
- # "uniform:0.5"
- # "uniform:0.7"
-  "continuous:20tr"
-  "continuous:30tr"
-  "continuous:40tr"
-)
+# Set EXPERIMENTS_OVERRIDE to a space-separated list to run a subset, e.g.
+#   EXPERIMENTS_OVERRIDE="uniform:0.7"
+if [[ -n "${EXPERIMENTS_OVERRIDE:-}" ]]; then
+  read -r -a EXPERIMENTS <<< "${EXPERIMENTS_OVERRIDE}"
+else
+  EXPERIMENTS=(
+    #"random:0.3"
+   #"random:0.5"
+   # "uniform:0.5"
+   # "uniform:0.7"
+    "continuous:20tr"
+    "continuous:30tr"
+    "continuous:40tr"
+  )
+fi
 N_SEEDS=3
 START_SEED=42
 
