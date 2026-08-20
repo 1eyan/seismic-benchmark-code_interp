@@ -1,0 +1,87 @@
+[
+    {
+        "model_id": "pu2024hu_net_first_arrival_accuracy",
+        "benchmark_id": "fbp-geomseg-all",
+        "scores": {
+            "mae": 1.716506665,
+            "rmse": 7.460474698,
+            "hit_rate_1px": 0.407734003,
+            "hit_rate_3px": 0.864398601,
+            "hit_rate_5px": 0.932426475,
+            "hit_rate_7px": 0.962287111,
+            "hit_rate_9px": 0.978047731,
+            "f1": 0.997980407
+        },
+        "paper_url": "https://doi.org/10.1109/LGRS.2023.3248233",
+        "code_url": "https://github.com/sixseven42/seismic-benchmark-code/blob/main/model/first_break_picking/stunet.py",
+        "date_added": "2026-07-14"
+    },
+    {
+        "model_id": "pu2024hu_net_first_arrival_accuracy",
+        "benchmark_id": "fbp-brunswick-valid",
+        "scores": {
+            "mae": 0.8290212,
+            "rmse": 5.642995935,
+            "hit_rate_1px": 0.602663933,
+            "hit_rate_3px": 0.972470819,
+            "hit_rate_5px": 0.988216925,
+            "hit_rate_7px": 0.992841523,
+            "hit_rate_9px": 0.99507292,
+            "f1": 0.998703916
+        },
+        "paper_url": "https://doi.org/10.1109/LGRS.2023.3248233",
+        "code_url": "https://github.com/sixseven42/seismic-benchmark-code/blob/main/model/first_break_picking/stunet.py",
+        "date_added": "2026-07-14"
+    },
+    {
+        "model_id": "pu2024hu_net_first_arrival_accuracy",
+        "benchmark_id": "fbp-dongbei",
+        "scores": {
+            "mae": 4.970467123,
+            "rmse": 31.91553999,
+            "hit_rate_1px": 0.218983794,
+            "hit_rate_3px": 0.739678484,
+            "hit_rate_5px": 0.860080543,
+            "hit_rate_7px": 0.89907362,
+            "hit_rate_9px": 0.91998173,
+            "f1": 0.991443117
+        },
+        "paper_url": "https://doi.org/10.1109/LGRS.2023.3248233",
+        "code_url": "https://github.com/sixseven42/seismic-benchmark-code/blob/main/model/first_break_picking/stunet.py",
+        "date_added": "2026-07-14"
+    },
+    {
+        "model_id": "pu2024hu_net_first_arrival_accuracy",
+        "benchmark_id": "fbp-halfmile-valid",
+        "scores": {
+            "mae": 1.044725155,
+            "rmse": 1.884668137,
+            "hit_rate_1px": 0.402363977,
+            "hit_rate_3px": 0.913551194,
+            "hit_rate_5px": 0.965365833,
+            "hit_rate_7px": 0.984467618,
+            "hit_rate_9px": 0.993283348,
+            "f1": 0.99909006
+        },
+        "paper_url": "https://doi.org/10.1109/LGRS.2023.3248233",
+        "code_url": "https://github.com/sixseven42/seismic-benchmark-code/blob/main/model/first_break_picking/stunet.py",
+        "date_added": "2026-07-14"
+    },
+    {
+        "model_id": "pu2024hu_net_first_arrival_accuracy",
+        "benchmark_id": "fbp-lalor-valid",
+        "scores": {
+            "mae": 2.26935471,
+            "rmse": 4.685895168,
+            "hit_rate_1px": 0.236456718,
+            "hit_rate_3px": 0.737062261,
+            "hit_rate_5px": 0.868537578,
+            "hit_rate_7px": 0.928970498,
+            "hit_rate_9px": 0.961945817,
+            "f1": 0.997941677
+        },
+        "paper_url": "https://doi.org/10.1109/LGRS.2023.3248233",
+        "code_url": "https://github.com/sixseven42/seismic-benchmark-code/blob/main/model/first_break_picking/stunet.py",
+        "date_added": "2026-07-14"
+    }
+]

@@ -1229,3 +1229,60 @@
     so the whole inference stdout is unbuffered through the `tee` pipeline.
 - Impact: batch log now refreshes in real time during inference; no stdout-
   capture dependency in tests (none reference `inference_on_shots`).
+
+## 2026-08-20 - Unified SSIM data_range + cfunet one-checkpoint cases
+
+- Context: Collected interpolation configs had inconsistent metric blocks
+  (some missing `psnr`, some duplicated `mse`, mixed SSIM `data_range` 1.0/2.0),
+  and Park2022 CFunet used separate continuous/paper checkpoints instead of one
+  paper checkpoint across the standard mask matrix.
+- Changes:
+  - `scripts/interpolation/normalize_metrics.py`: now forces SSIM
+    `data_range: 2.0` for every config (removed the per-file `_SSIM_DR_RE`
+    preservation); emits the fixed snr/psnr/ssim(2.0)/mae/mse block.
+  - New `scripts/interpolation/build_cfunet_paper_cases.py`: derives, for each
+    seed (42/43/44), the standard scenario matrix (uniform 30/50/70,
+    random 30/50, continuous 20/30/40tr) from the paper template, writes
+    `collected/configs/interp_park2022_cfunet_paper_seed<seed>_<scenario>.yaml`
+    (normalized metrics + `inference.data` pointing at held-out shots10-18) and
+    symlinks `collected/params/..._<scenario>.pt` -> the paper
+    `..._cfunet_random_miss50-88.pt` checkpoint, so one paper checkpoint covers
+    all mask cases.
+- Impact: cfunet now reuses the paper (cfunet_random-trained) checkpoint for
+  every mask scenario; SSIM is comparable across models with L=2.0. The legacy
+  `interp_park2022_cfunet_continuous_*` configs/checkpoints are superseded and
+  must be removed before the xlsx fill to avoid duplicate
+  `park2022_cfunet (continuous Ntr)` rows.
+
+## 2026-08-20 - cfunet legacy cleanup + liu2022 inference-block fix
+
+- Context: After generating the 24 one-checkpoint cfunet configs, the legacy
+  `interp_park2022_cfunet_continuous_*` and `..._paper_*_cfunet_random_miss50-88`
+  configs/checkpoints/outputs were removed to avoid duplicate
+  `park2022_cfunet (continuous Ntr)` rows. `liu2022_wrdl` configs also lacked an
+  `inference:` block (evaluated on train shots1-9 instead of test shots10-18).
+- Changes:
+  - Deleted 9 legacy cfunet configs, 6 continuous checkpoints, 9 output dirs
+    (kept the 3 paper checkpoints referenced by the new symlinks).
+  - New `scripts/interpolation/add_inference_block.py`: inserts a held-out
+    shots10-18 `inference.data` block before `paper_alignment:` in collected
+    configs that lack one (targets the 21 `liu2022_wrdl` configs).
+- Impact: cfunet now matches the other papers' setup (standard mask matrix +
+  test data); liu2022 can be brought in line with one script run.
+
+## 2026-08-20 - uniform_miss30 is redundant; standardized to 7 scenarios
+
+- Context: `mask_traces` uniform mode derives stride as
+  `max(2, round(1/(1-ratio)))` and ignores `preprocess.uniform_stride`, so
+  uniform:0.3 and uniform:0.5 both yield stride 2 (~50% missing); only 0.7
+  yields stride 3. chai2020 miss30/miss50 metrics are near-identical,
+  confirming uniform_miss30 duplicates uniform_miss50.
+- Changes:
+  - Removed all `*_uniform_miss30` collected configs/checkpoints/outputs
+    (chai2020, li2022, yu2022 = 9 legacy; plus 3 cfunet generated earlier).
+  - `scripts/interpolation/build_cfunet_paper_cases.py`: dropped uniform_miss30
+    from `_SCENARIOS` (now 7 scenarios: random 30/50, uniform 50/70,
+    continuous 20/30/40tr).
+- Impact: The interpolation benchmark matrix is now the canonical 7-scenario
+  list from `train_infer_loop.sh`; cfunet has 21 configs (7 x 3 seeds).
+  `liu2022_wrdl` already lacked uniform_miss30, so it is now consistent.

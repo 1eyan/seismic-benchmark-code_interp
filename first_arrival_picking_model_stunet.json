@@ -1,0 +1,11 @@
+{
+  "id": "jiang2023swin_transformer_first_break",
+  "name": "STUNet",
+  "authors": "Peifan Jiang, Fei Deng, Xuben Wang, Pengfei Shuai, Wen Luo, Yun Tang",
+  "year": 2023,
+  "type": "deep_learning",
+  "tasks": ["first_arrival_picking"],
+  "paper_url": "https://doi.org/10.1109/LGRS.2023.3248233",
+  "code_url": "https://github.com/sixseven42/seismic-benchmark-code/blob/main/model/first_break_picking/stunet.py",
+  "weights_url": "https://huggingface.co/GeoBrain/first-break-picking/tree/main"
+}
