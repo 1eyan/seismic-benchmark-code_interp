@@ -1286,3 +1286,28 @@
 - Impact: The interpolation benchmark matrix is now the canonical 7-scenario
   list from `train_infer_loop.sh`; cfunet has 21 configs (7 x 3 seeds).
   `liu2022_wrdl` already lacked uniform_miss30, so it is now consistent.
+
+## 2026-08-20 - fix metric domain for patch_normalize-only configs
+
+- Context: `inference_interpolation.py` computed PSNR/SSIM/MAE/MSE on
+  `shots_norm`/`pred_norm`, which stay in the ORIGINAL amplitude domain for
+  `preprocess.patch_normalize: true` configs (global `normalize` is skipped, so
+  `stats is None`). The config `psnr.data_range: 1.0` / `ssim.data_range: 2.0`
+  (written by `normalize_metrics.py`) then overrode the data-derived range
+  unconditionally, producing negative PSNR (e.g. -23 dB) and under-stabilized
+  SSIM, while MAE/MSE stayed in the original domain (~1-5 / ~4-390) — a
+  different domain than the always-normalizing transformer script.
+- Changes (`scripts/interpolation/inference_interpolation.py`,
+  `inference_interpolation_transformer.py`):
+  - Normalize the metric input once (`metric_target`/`metric_pred`) when
+    `stats is None and "normalize" not in skip`, using the target's stats via
+    `override_stats`; metrics now run on these normalized arrays, outputs still
+    use `_inverse` on the original-domain arrays.
+  - Drop the config `data_range` override loop in BOTH inference scripts;
+    derive `psnr_peak`/`ssim_data_range` purely from the normalization state
+    (max_abs -> 1.0/2.0, minmax/pan2020_symmetric -> 1.0/1.0, mean_std or
+    normalize-skipped -> data-derived).
+- Impact: MAE/MSE now report in the max_abs-normalized [-1,1] domain (MAE
+  ~1e-3, MSE ~1e-5), consistent with the benchmark convention and the
+  transformer script; also fixes SSIM L for minmax/pan2020 configs (was wrongly
+  2.0, now 1.0).

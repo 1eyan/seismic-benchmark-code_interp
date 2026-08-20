@@ -335,38 +335,41 @@ def main() -> None:
     # ------------------------------------------------------------------
     metric_cfg = cfg.get("metrics", [])
     metric_names = [m["name"] for m in metric_cfg]
-    # PSNR uses peak amplitude (max_abs), SSIM uses peak-to-peak range (L).
-    # When only patch_normalize is used (no global norm), stats is None and
-    # the data stays in the original amplitude domain — infer ranges from data.
-    if stats is None:
-        psnr_peak = float(np.max(np.abs(shots_norm)))
-        ssim_data_range = float(np.max(shots_norm) - np.min(shots_norm))
-    elif norm_mode in ("max_abs",):
-        psnr_peak = 1.0
-        ssim_data_range = 2.0
+    # The benchmark reports scalar metrics in the normalized domain.  When only
+    # patch_normalize is used (no global norm), ``stats`` is None and the data
+    # is still in the original amplitude domain, so normalize it here for the
+    # metric computation only (outputs stay in the original domain via
+    # ``_inverse``).
+    metric_target = shots_norm
+    metric_pred = pred_norm
+    if stats is None and "normalize" not in skip:
+        metric_target, metric_stats = normalize(shots_norm, mode=norm_mode, per=norm_scope)
+        metric_pred, _ = normalize(
+            pred_norm, mode=norm_mode, per=norm_scope, override_stats=metric_stats
+        )
+
+    # PSNR peak / SSIM data_range follow whether metric_target is normalized.
+    if "normalize" in skip:
+        # Normalization skipped -> original amplitude domain.
+        psnr_peak = float(np.max(np.abs(metric_target)))
+        ssim_data_range = float(np.max(metric_target) - np.min(metric_target))
+    elif norm_mode == "max_abs":
+        psnr_peak, ssim_data_range = 1.0, 2.0
     elif norm_mode in ("minmax", "pan2020_symmetric"):
-        psnr_peak = 1.0
-        ssim_data_range = 1.0
-    else:  # mean_std — unbounded; infer from the actual target volume
-        psnr_peak = float(np.max(np.abs(shots_norm)))
-        ssim_data_range = float(np.max(shots_norm) - np.min(shots_norm))
-    # Guard against constant-zero / near-constant data
+        psnr_peak, ssim_data_range = 1.0, 1.0
+    else:  # mean_std: unbounded -> infer from metric_target
+        psnr_peak = float(np.max(np.abs(metric_target)))
+        ssim_data_range = float(np.max(metric_target) - np.min(metric_target))
     if psnr_peak <= 0.0:
         psnr_peak = 1.0
     if ssim_data_range <= 0.0:
         ssim_data_range = 1.0
 
-    for m in metric_cfg:
-        if m["name"] == "psnr" and "data_range" in m.get("params", {}):
-            psnr_peak = float(m["params"]["data_range"])
-        elif m["name"] == "ssim" and "data_range" in m.get("params", {}):
-            ssim_data_range = float(m["params"]["data_range"])
-
     # Scalar metrics on masked positions only (avoids inflation from
     # ground-truth copies at observed traces).
     per_shot, mean = compute_shot_metrics(
-        pred_norm,
-        shots_norm,
+        metric_pred,
+        metric_target,
         metric_names=metric_names,
         psnr_peak=psnr_peak,
         ssim_data_range=ssim_data_range,
@@ -376,7 +379,7 @@ def main() -> None:
     # EB-WSE / FB-FRE binned diagnostics on model output (no GT fill-in).
     dt = float(prep.get("dt", 0.002))
     binned_kwargs = build_binned_metric_kwargs(infer_cfg)
-    binned = compute_binned_metrics(pred_norm, shots_norm, dt=dt, **binned_kwargs)
+    binned = compute_binned_metrics(metric_pred, metric_target, dt=dt, **binned_kwargs)
     if binned:
         mean.update(binned)
 

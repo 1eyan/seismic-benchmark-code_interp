@@ -349,25 +349,22 @@ def main() -> None:
     # --- Metrics (normalised domain) ---
     metric_cfg = cfg.get("metrics", [])
     metric_names = [m["name"] for m in metric_cfg]
-    if norm_mode == "max_abs":
-        psnr_peak = 1.0
-        ssim_data_range = 2.0
-    elif norm_mode == "minmax":
-        psnr_peak = 1.0
-        ssim_data_range = 1.0
-    else:
+    # PSNR peak / SSIM data_range follow whether shots_norm is normalized.
+    if "normalize" in skip:
+        # Normalization skipped -> original amplitude domain.
         psnr_peak = float(np.max(np.abs(shots_norm)))
         ssim_data_range = float(np.max(shots_norm) - np.min(shots_norm))
-        if psnr_peak <= 0.0:
-            psnr_peak = 1.0
-        if ssim_data_range <= 0.0:
-            ssim_data_range = 1.0
-
-    for m in metric_cfg:
-        if m["name"] == "psnr" and "data_range" in m.get("params", {}):
-            psnr_peak = float(m["params"]["data_range"])
-        elif m["name"] == "ssim" and "data_range" in m.get("params", {}):
-            ssim_data_range = float(m["params"]["data_range"])
+    elif norm_mode == "max_abs":
+        psnr_peak, ssim_data_range = 1.0, 2.0
+    elif norm_mode in ("minmax", "pan2020_symmetric"):
+        psnr_peak, ssim_data_range = 1.0, 1.0
+    else:  # mean_std: unbounded -> infer from shots_norm
+        psnr_peak = float(np.max(np.abs(shots_norm)))
+        ssim_data_range = float(np.max(shots_norm) - np.min(shots_norm))
+    if psnr_peak <= 0.0:
+        psnr_peak = 1.0
+    if ssim_data_range <= 0.0:
+        ssim_data_range = 1.0
 
     # Scalar metrics on masked positions only (unless replace_observed
     # is set, in which case all positions are model output).
