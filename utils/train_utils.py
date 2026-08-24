@@ -1,9 +1,9 @@
-"""Training helpers (seeding, config, optim / sched / ckpt / loops)."""
+"""Training helpers, including model-owned auxiliary-loss integration."""
 
 from __future__ import annotations
 
 import csv
-import inspect
+import json
 import math
 import os
 import time
@@ -78,6 +78,9 @@ def setup_experiment_dir(
                Defaults to the current working directory.
     """
     exp = cfg.get("experiment", {})
+    method_manifest = cfg.get("method")
+    if method_manifest is not None and not isinstance(method_manifest, dict):
+        raise ValueError("Config field `method` must be a mapping when provided.")
     name = exp.get("name", "exp")
     output_dir_raw = exp.get("output_dir", "results")
     output_dir = Path(output_dir_raw)
@@ -89,6 +92,9 @@ def setup_experiment_dir(
     (exp_dir / "visualizations").mkdir(parents=True, exist_ok=True)
     with (exp_dir / "config.yaml").open("w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=False)
+    if method_manifest is not None:
+        with (exp_dir / "method_manifest.json").open("w", encoding="utf-8") as f:
+            json.dump(method_manifest, f, indent=2, ensure_ascii=True)
     return exp_dir
 
 
@@ -192,11 +198,6 @@ def init_distributed(backend: Optional[str] = None) -> Tuple[bool, int, int, int
     if backend is None:
         backend = "nccl" if torch.cuda.is_available() else "gloo"
     if torch.cuda.is_available():
-        if local_rank >= torch.cuda.device_count():
-            raise RuntimeError(
-                f"LOCAL_RANK={local_rank} >= torch.cuda.device_count()={torch.cuda.device_count()}. "
-                f"Check CUDA_VISIBLE_DEVICES and the number of GPUs available."
-            )
         torch.cuda.set_device(local_rank)
         device = torch.device("cuda", local_rank)
         torch.distributed.init_process_group(
@@ -411,6 +412,17 @@ def maybe_save_best_checkpoint(
 # Training / evaluation loops
 # ----------------------------------------------------------------------
 
+def _pop_model_loss_extras(model: nn.Module) -> Dict[str, Any]:
+    """Collect optional model-owned tensors for a composite loss."""
+    provider = getattr(unwrap_ddp(model), "pop_loss_extras", None)
+    if provider is None:
+        return {}
+    extras = provider()
+    if not isinstance(extras, dict):
+        raise TypeError("Model pop_loss_extras() must return a dictionary.")
+    return extras
+
+
 def train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -450,12 +462,10 @@ def train_one_epoch(
                 extras[k] = extras[k].to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
-        sig = inspect.signature(unwrap_ddp(model).forward)
-        if "mask" in sig.parameters:
-            pred = model(x, **extras)
-        else:
-            pred = model(x)
-        loss = loss_fn(pred, y, **extras)
+        pred = model(x)
+        loss_extras = dict(extras)
+        loss_extras.update(_pop_model_loss_extras(model))
+        loss = loss_fn(pred, y, **loss_extras)
         loss.backward()
         if grad_clip and grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
@@ -532,12 +542,10 @@ def evaluate(
             if isinstance(extras_eval[k], torch.Tensor):
                 extras_eval[k] = extras_eval[k].to(device, non_blocking=True)
 
-        sig = inspect.signature(unwrap_ddp(model).forward)
-        if "mask" in sig.parameters:
-            pred = model(x, **extras_eval)
-        else:
-            pred = model(x)
-        loss = loss_fn(pred, y, **extras_eval)
+        pred = model(x)
+        loss_extras = dict(extras_eval)
+        loss_extras.update(_pop_model_loss_extras(model))
+        loss = loss_fn(pred, y, **loss_extras)
         total_loss += float(loss.detach().item())
         n_batches += 1
 
@@ -642,7 +650,8 @@ def build_loaders(
     Returns
     -------
     train_loader, test_loader, train_sampler, eval_train_loader
-        ``eval_train_loader`` is ``None`` on non-zero ranks under DDP.
+        Under DDP, the evaluation loaders use non-shuffling distributed
+        samplers so every rank evaluates a distinct, equally sized shard.
     """
     result = build_patch_pairs_fn(cfg)
     if not isinstance(result, (tuple, list)):
@@ -676,12 +685,37 @@ def build_loaders(
         )
 
     train_loader = _make_dataloader(*train_arrays, cfg=cfg, shuffle=True, sampler=train_sampler)
-    test_loader = _make_dataloader(*test_arrays, cfg=cfg, shuffle=False)
 
-    if distributed and rank != 0:
-        eval_train_loader: Optional[DataLoader] = None
-    else:
-        eval_train_loader = _make_dataloader(*train_arrays, cfg=cfg, shuffle=False)
+    test_sampler: Optional[DistributedSampler] = None
+    eval_train_sampler: Optional[DistributedSampler] = None
+    if distributed:
+        test_sampler = DistributedSampler(
+            TensorDataset(*test_arrays),
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            seed=sampler_seed,
+        )
+        eval_train_sampler = DistributedSampler(
+            TensorDataset(*train_arrays),
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            seed=sampler_seed,
+        )
+
+    test_loader = _make_dataloader(
+        *test_arrays,
+        cfg=cfg,
+        shuffle=False,
+        sampler=test_sampler,
+    )
+    eval_train_loader = _make_dataloader(
+        *train_arrays,
+        cfg=cfg,
+        shuffle=False,
+        sampler=eval_train_sampler,
+    )
 
     return train_loader, test_loader, train_sampler, eval_train_loader
 
@@ -717,7 +751,8 @@ def build_shot_split_loaders(
     Returns
     -------
     train_loader, val_loader, train_sampler, eval_train_loader
-        ``eval_train_loader`` is ``None`` on non-zero ranks under DDP.
+        Under DDP, the evaluation loaders use non-shuffling distributed
+        samplers so every rank evaluates a distinct, equally sized shard.
     """
     input_shots, target_shots, per_shot_ffid = preprocess_fn(cfg)
 
@@ -785,10 +820,21 @@ def build_shot_split_loaders(
         )
     val_loader = _make_dataloader(*val_arrays, cfg=cfg, shuffle=False, sampler=val_sampler)
 
-    if distributed and rank != 0:
-        eval_train_loader: Optional[DataLoader] = None
-    else:
-        eval_train_loader = _make_dataloader(*train_arrays, cfg=cfg, shuffle=False)
+    eval_train_sampler: Optional[DistributedSampler] = None
+    if distributed:
+        eval_train_sampler = DistributedSampler(
+            TensorDataset(*train_arrays),
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            seed=sampler_seed,
+        )
+    eval_train_loader = _make_dataloader(
+        *train_arrays,
+        cfg=cfg,
+        shuffle=False,
+        sampler=eval_train_sampler,
+    )
 
     return train_loader, val_loader, train_sampler, eval_train_loader
 
