@@ -22,6 +22,7 @@ from . import park2022_cfunet  # noqa: F401
 from . import yu2022_anet  # noqa: F401
 from . import yuan2022_btn  # noqa: F401
 from . import guo2023_mst  # noqa: F401
+from . import wu2024_spnet  # noqa: F401
 from . import gated_transformer_v9  # noqa: F401
 from . import gated_transformer_v9_encdec  # noqa: F401
 from . import gated_transformer_v11  # noqa: F401
