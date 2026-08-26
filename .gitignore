@@ -72,3 +72,5 @@ scripts/**/*.sh
 scripts/**/*.bash
 
 /collected/
+*.json
+*.xlsx

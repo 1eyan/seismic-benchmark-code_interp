@@ -1311,3 +1311,63 @@
   ~1e-3, MSE ~1e-5), consistent with the benchmark convention and the
   transformer script; also fixes SSIM L for minmax/pan2020 configs (was wrongly
   2.0, now 1.0).
+
+## 2026-08-21 - Export interpolation benchmark to leaderboard JSON
+
+- Context: The first-arrival-picking reference files
+  (`first_arrival_picking_{model,result}_stunet.json`) define the leaderboard
+  schema; the interpolation results lived only in the "Interpolation" sheet of
+  `batch_evaluation_part.xlsx`. Needed the same JSON pair per interpolation
+  model.
+- Changes:
+  - New `scripts/interpolation/export_benchmark_json.py`: reads the xlsx
+    "Interpolation" sheet and writes `interpolation_model_<type>.json` +
+    `interpolation_result_<type>.json` for each of the 7 models (14 files,
+    46 result rows). Scores are reconstruction (snr/psnr/ssim/mae/mse/rmse)
+    plus binned EB-WSE / FB-FRE, keyed by lowercased column name; `mean±std`
+    cells collapse to mean, `—` -> null, `FREQUENCY_RANGE_HZ` -> null.
+    `benchmark_id` = `interp-<mode>-<param>`; `model_id`/`id` =
+    `<type>_interpolation`; `code_url` points at
+    `github.com/1eyan/seismic-benchmark-code_interp/.../model/interpolation/<type>.py`;
+    `parameters_m` added to the model JSON.
+  - Curated model metadata (name/authors/year/paper_url) hard-coded in the
+    script's `MODELS` dict. Authors for chai2020 / li2022_caunet / pan2020 were
+    resolved via web search (the notes files only had "et al."); li2022_caunet
+    paper title/DOI corrected to "Consecutively Missing Seismic Data
+    Interpolation Based on Coordinate Attention Unet", IEEE GRSL 19,
+    10.1109/LGRS.2021.3128511. `gated_transformer_v9` has no paper ->
+    authors/year/paper_url = null.
+- Impact: Interpolation now has a JSON pair matching the FBP schema; the export
+  script is the inverse of `fill_batch_evaluation_xlsx.py`.
+
+## 2026-08-26 - Full-trace evaluation and scaled-up ANet/CAUNet
+
+- Context: User review found (1) WRDL seed 43 collapsed on
+  `continuous_miss40tr` (PSNR -1.30) and `random_miss30` (PSNR 11.92) while
+  other seeds were normal, dragging down the averaged benchmark; and (2) ANet
+  (2.01M) and CAUNet (1.95M) were much smaller than the regular UNet (7.76M)
+  and CFunet (7.35M). The user also requested that all reconstruction metrics
+  be evaluated on the full model output rather than only on missing traces.
+- Changes:
+  - `scripts/interpolation/inference_interpolation.py`: added
+    `--replace-observed` / `--keep-observed` CLI flags and an
+    `inference.replace_observed` config field (default `true`). When enabled,
+    scalar metrics (MSE/MAE/RMSE/SNR/PSNR) and SSIM are computed on the raw
+    network output for every trace, and the saved `pred_shots.npy` is the raw
+    model output. When disabled, behaviour matches the previous missing-trace-
+    only evaluation.
+  - `scripts/interpolation/inference_interpolation_transformer.py`: changed
+    the default of `replace_observed` from `false` to `true` for consistency.
+  - `configs/interpolation/yu2022_anet_seg_c3_paper.yaml`: raised
+    `base_channels` from 64 to 120, giving ~7.05M parameters (aligned with the
+    regular UNet). Replaced stale `overwrite_observed` with `replace_observed: true`.
+  - `configs/interpolation/li2022_caunet_seg_c3_paper.yaml`: raised
+    `base_channels` from 32 to 64, giving ~7.78M parameters (aligned with the
+    regular UNet). Replaced stale `overwrite_observed` with `replace_observed: true`.
+  - Cleaned old collected configs/params/outputs and `results/` directories for
+    ANet/CAUNet and the two failing WRDL seed-43 scenarios so the upcoming
+    re-runs start from a clean state.
+- Impact: All interpolation models will now report metrics on the full model
+  output, and ANet/CAUNet will compete at a parameter budget comparable to the
+  regular UNet. The benchmark xlsx/JSON must be regenerated after the pending
+  training and full re-inference pass.

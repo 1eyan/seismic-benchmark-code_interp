@@ -28,6 +28,7 @@ _INFERENCE_BLOCK = """inference:
       traces_per_shot: 201
       time_downsample: 1
   n_viz_shots: 5
+  replace_observed: true
 """
 
 

@@ -234,7 +234,7 @@ def main() -> None:
     )
     replace_observed = (
         args.replace_observed if args.replace_observed is not None
-        else infer_cfg.get("replace_observed", False)
+        else infer_cfg.get("replace_observed", True)
     )
 
     prep = cfg.get("preprocess", {})

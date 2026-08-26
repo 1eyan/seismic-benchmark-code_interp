@@ -123,6 +123,20 @@ def parse_args() -> argparse.Namespace:
         help="Save predicted/input/target shots as .npy files. Overrides config inference.save_npy.",
     )
     parser.add_argument(
+        "--replace-observed",
+        dest="replace_observed",
+        action="store_true",
+        default=None,
+        help="Evaluate the model output on all traces (including observed ones) and save the raw network output. "
+        "Overrides config inference.replace_observed.",
+    )
+    parser.add_argument(
+        "--keep-observed",
+        dest="replace_observed",
+        action="store_false",
+        help="Keep observed traces as ground truth in metrics and saved predictions (legacy missing-trace-only evaluation).",
+    )
+    parser.add_argument(
         "--mask-mode",
         type=str,
         default=None,
@@ -194,6 +208,11 @@ def main() -> None:
         args.save_npy
         if args.save_npy is not None
         else infer_cfg.get("save_npy", False)
+    )
+    replace_observed = (
+        args.replace_observed
+        if args.replace_observed is not None
+        else infer_cfg.get("replace_observed", True)
     )
 
     # Mask params: CLI > config preprocess > defaults
@@ -365,15 +384,16 @@ def main() -> None:
     if ssim_data_range <= 0.0:
         ssim_data_range = 1.0
 
-    # Scalar metrics on masked positions only (avoids inflation from
-    # ground-truth copies at observed traces).
+    # Scalar metrics on all traces when replace_observed is true, otherwise on
+    # masked positions only (legacy missing-trace-only evaluation).
+    metric_mask = None if replace_observed else mask_3d
     per_shot, mean = compute_shot_metrics(
         metric_pred,
         metric_target,
         metric_names=metric_names,
         psnr_peak=psnr_peak,
         ssim_data_range=ssim_data_range,
-        mask=mask_3d,
+        mask=metric_mask,
     )
 
     # EB-WSE / FB-FRE binned diagnostics on model output (no GT fill-in).
@@ -383,8 +403,9 @@ def main() -> None:
     if binned:
         mean.update(binned)
 
-    # Reconstruct full volume (observed traces = ground truth).
-    recon_norm = np.where(mask_3d, pred_norm, shots_norm)
+    # Reconstruct full volume (observed traces = model output when replace_observed
+    # is true, otherwise observed traces = ground truth).
+    recon_norm = pred_norm if replace_observed else np.where(mask_3d, pred_norm, shots_norm)
 
     # ------------------------------------------------------------------
     # 6. Inverse preprocessing (back to original amplitude domain)
