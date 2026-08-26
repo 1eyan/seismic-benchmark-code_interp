@@ -785,6 +785,54 @@ class CFunetMSEFourierLoss(BaseLoss):
             raise ValueError("CFunetMSEFourierLoss requires `target`.")
         return self.components(pred, target)["loss_total"]
 
+@register_loss("spnet_composite")
+class SPNetCompositeLoss(BaseLoss):
+    """Combine reconstruction MSE with the SPNet transform-symmetry constraint."""
+
+    def __init__(
+        self,
+        symmetry_weight: float = 0.01,
+        reduction: str = "mean",
+    ) -> None:
+        super().__init__()
+        if symmetry_weight < 0:
+            raise ValueError(
+                f"symmetry_weight must be non-negative, got {symmetry_weight}."
+            )
+        if reduction != "mean":
+            raise ValueError(
+                "SPNetCompositeLoss supports reduction='mean' only, matching the paper."
+            )
+        self.symmetry_weight = float(symmetry_weight)
+        self.reduction = reduction
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: Optional[torch.Tensor] = None,
+        **extras: Any,
+    ) -> torch.Tensor:
+        if target is None:
+            raise ValueError("SPNetCompositeLoss requires `target`.")
+
+        discrepancy = nn.functional.mse_loss(
+            pred,
+            target,
+            reduction=self.reduction,
+        )
+        if self.symmetry_weight == 0.0:
+            return discrepancy
+
+        residuals = extras.get("symmetry_residuals")
+        if not isinstance(residuals, (tuple, list)) or len(residuals) == 0:
+            raise ValueError(
+                "SPNetCompositeLoss requires non-empty extras['symmetry_residuals']."
+            )
+        constraint = torch.stack(
+            [residual.square().mean() for residual in residuals]
+        ).sum()
+        return discrepancy + self.symmetry_weight * constraint
+
 
 def build_loss(cfg: Dict[str, Any]) -> BaseLoss:
     """Instantiate a loss from a ``{type, params}`` config block."""
