@@ -20,7 +20,10 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 cd "${REPO_ROOT}"
 
-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-1}"
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
+MASTER_PORT="${MASTER_PORT:-auto}"
+TORCHRUN_EXTRA="${TORCHRUN_EXTRA:-}"
 INFER_DEVICE="${INFER_DEVICE:-cuda:1}"
 BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/liu2022_wrdl_conservative.yaml}"
 RUN_INFERENCE="${RUN_INFERENCE:-true}"
@@ -31,18 +34,32 @@ export CUDA_VISIBLE_DEVICES
 NAME_BASE="interp_liu2022_wrdl_conservative"
 SEED=43
 
+pick_port() {
+  python -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()"
+}
+
 run_training() {
   local mask_mode="$1"
   local arg_name="$2"
   local arg_value="$3"
   local suffix="$4"
   local run_name="${NAME_BASE}_seed${SEED}_${suffix}"
+  local master_port
+
+  if [[ "${MASTER_PORT}" == "auto" ]]; then
+    master_port="$(pick_port)"
+  else
+    master_port="${MASTER_PORT}"
+  fi
 
   echo "================================================================"
-  echo "Training ${run_name}"
+  echo "Training ${run_name} (GPUs=${CUDA_VISIBLE_DEVICES}, nproc=${NPROC_PER_NODE})"
   echo "================================================================"
 
-  python scripts/interpolation/train_interpolation_unet.py \
+  torchrun ${TORCHRUN_EXTRA} \
+    --nproc_per_node="${NPROC_PER_NODE}" \
+    --master_port="${master_port}" \
+    scripts/interpolation/train_interpolation_unet.py \
     --config "${BASE_CONFIG}" \
     --seed "${SEED}" \
     --mask-mode "${mask_mode}" \
