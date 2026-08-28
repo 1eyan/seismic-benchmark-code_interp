@@ -337,6 +337,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Number of contiguous missing traces for continuous masking.",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed (overrides YAML experiment.seed and appends _seed<N> to experiment name).",
+    )
     return parser.parse_args()
 
 
@@ -353,6 +359,12 @@ def main() -> None:
         cfg["preprocess"]["mask_ratio"] = args.mask_ratio
     if args.continuous_missing_traces is not None:
         cfg["preprocess"]["continuous_missing_traces"] = args.continuous_missing_traces
+
+    # Inject CLI seed into experiment config; append _seed<N> to experiment name
+    # so direct training produces the same directory layout as train_infer_loop.sh.
+    if args.seed is not None:
+        cfg["experiment"]["seed"] = args.seed
+        cfg["experiment"]["name"] = f"{cfg['experiment']['name']}_seed{args.seed}"
 
     mask_mode = cfg["preprocess"].get("mask_mode", "continuous")
     mask_ratio_range = cfg["preprocess"].get("mask_ratio_range")

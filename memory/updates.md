@@ -1371,3 +1371,20 @@
   output, and ANet/CAUNet will compete at a parameter budget comparable to the
   regular UNet. The benchmark xlsx/JSON must be regenerated after the pending
   training and full re-inference pass.
+
+## 2026-08-28 - Direct retraining for WRDL seed-43 failing scenarios
+
+- Context: The two failing WRDL seed-43 scenarios (`continuous_miss40tr` and
+  `random_miss30`) needed to be retrained directly with
+  `train_interpolation_unet.py`. The script previously had no `--seed` CLI flag;
+  `train_infer_loop.sh` worked around this by rewriting the config with `sed`.
+- Changes:
+  - `scripts/interpolation/train_interpolation_unet.py`: added `--seed` CLI
+    argument. When provided, it overrides `experiment.seed` and appends
+    `_seed<N>` to the experiment name so the output directory matches the
+    `train_infer_loop.sh` naming convention.
+  - `scripts/interpolation/rerun_wrdl_seed43.sh`: new helper script that trains
+    (and optionally infers) the two failing WRDL seed-43 scenarios using the
+    base WRDL config and CLI overrides.
+- Impact: The failing WRDL checkpoints can now be retrained with a single
+  command without generating temporary config files.
