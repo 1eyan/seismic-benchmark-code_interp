@@ -34,6 +34,10 @@ _REPO_URL = "https://github.com/1eyan/seismic-benchmark-code_interp/blob/main"
 
 _DASH = "—"
 
+# Model types excluded from the leaderboard export (kept in collected/ but no
+# longer reported).
+EXCLUDED_MODEL_TYPES = {"guo2023_mst"}
+
 # Curated metadata per registered model type (sourced from
 # model/interpolation/<name>_notes.md and the cited papers).
 MODELS: Dict[str, Dict[str, Any]] = {
@@ -128,6 +132,10 @@ def main() -> None:
     parser.add_argument("--input", type=str, default="batch_evaluation_part.xlsx")
     parser.add_argument("--output-dir", type=str, default=".")
     parser.add_argument("--date-added", type=str, default="2026-08-21")
+    parser.add_argument(
+        "--exclude", type=str, default="",
+        help="Extra model types to skip, space-separated (default excludes 'guo2023_mst').",
+    )
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -137,6 +145,10 @@ def main() -> None:
     if not output_dir.is_absolute():
         output_dir = _REPO_ROOT / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    excluded = set(EXCLUDED_MODEL_TYPES)
+    if args.exclude.strip():
+        excluded |= {s for s in args.exclude.split() if s}
 
     headers, rows = _read_sheet(input_path)
     method_idx = headers.index("Method")
@@ -154,6 +166,9 @@ def main() -> None:
         method = str(row[method_idx]).strip()
         mtype = _model_type(method)
         bid = _benchmark_id(method)
+        if mtype in excluded:
+            print(f"skipping excluded model type {mtype!r}")
+            continue
         if mtype not in MODELS:
             raise SystemExit(f"ERROR: unknown model type {mtype!r}; add it to MODELS.")
         if bid is None:

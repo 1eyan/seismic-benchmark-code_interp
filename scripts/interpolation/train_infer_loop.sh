@@ -55,7 +55,7 @@ TORCHRUN_EXTRA="${TORCHRUN_EXTRA:-}"
 # random/uniform/continuous masks for baseline models. Park2022 CFunet runs
 # belong to train_infer_loop_cfunet.sh (per-patch cfunet_random + continuous
 # families); do not pair this script with a mask_ratio_range config.
-BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/liu2022_wrdl_conservative.yaml}"
+BASE_CONFIG="${BASE_CONFIG:-configs/interpolation/li2022_caunet_seg_c3_paper.yaml}"
 TRAIN_PY="${TRAIN_PY:-scripts/interpolation/train_interpolation_unet.py}"
 INFER_PY="${INFER_PY:-scripts/interpolation/inference_interpolation.py}"
 
@@ -74,10 +74,10 @@ if [[ -n "${EXPERIMENTS_OVERRIDE:-}" ]]; then
   read -r -a EXPERIMENTS <<< "${EXPERIMENTS_OVERRIDE}"
 else
   EXPERIMENTS=(
-    "random:0.3"
-    "random:0.5"
-    "uniform:0.5"
-    "uniform:0.7"
+    #"random:0.3"
+    #"random:0.5"
+    #"uniform:0.5"
+    #"uniform:0.7"
     "continuous:20tr"
     "continuous:30tr"
     "continuous:40tr"

@@ -15,14 +15,14 @@
 
 experiment:
   name: interp_park2022_cfunet_field_paper
-  output_dir: /cloud/cloud-s3fs
+  output_dir: results
   seed: 42
   device: cuda:0
 
 data:
   segy:
-    path: /cloud/cloud-s3fs/seismic_shotper0.8.segy
-    traces_per_shot: 120
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
+    traces_per_shot: 201
     time_downsample: 1
   test_ratio: 0.1
   loader:

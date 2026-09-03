@@ -29,7 +29,7 @@ data:
     time_downsample: 1
   test_ratio: 0.1
   loader:
-    batch_size: 128          # paper-explicit for the synthetic experiment
+    batch_size: 96         # paper-explicit for the synthetic experiment
     num_workers: 4
     pin_memory: true
 
@@ -55,7 +55,7 @@ model:
   params:
     in_channels: 1          # paper-explicit: missing patch only, no mask channel
     out_channels: 1
-    base_channels: 64       # paper-explicit: 64 kernels in the first conv
+    base_channels: 120      # scaled up to match regular UNet parameter budget (~7M)
     scaling_factor: 2       # paper-explicit: two stride-2 downsampling stages
     num_residual_blocks: 6  # paper-explicit
     kernel_size: 3          # reproduction-assumption
@@ -121,7 +121,7 @@ inference:
   n_viz_shots: 5
   device: 1
   batch_size: 4
-  overwrite_observed: false  # paper profile evaluates the raw network output
+  replace_observed: true   # evaluate model output on all traces (observed + missing)
 
 # ---------------------------------------------------------------------------
 # Paper alignment audit

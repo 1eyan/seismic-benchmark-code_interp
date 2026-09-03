@@ -32,7 +32,7 @@ set -uo pipefail
 CONFIG_DIR="${1:-${CONFIG_DIR:-collected/configs}}"
 PARAMS_DIR="${2:-${PARAMS_DIR:-collected/params}}"
 COLLECT_ROOT="${3:-${COLLECT_ROOT:-collected}}"
-INFER_DEVICE="${4:-${INFER_DEVICE:-cuda:1}}"
+INFER_DEVICE="${4:-${INFER_DEVICE:-cuda:0}}"
 FORCE="${FORCE:-false}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

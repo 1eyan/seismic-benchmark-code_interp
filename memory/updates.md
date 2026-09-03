@@ -1388,3 +1388,20 @@
     base WRDL config and CLI overrides.
 - Impact: The failing WRDL checkpoints can now be retrained with a single
   command without generating temporary config files.
+
+## 2026-09-02 - Exclude guo2023_mst from benchmark workbook/JSON
+
+- Context: `export_benchmark_json.py` aborted with "unknown model type
+  'guo2023_mst'" because the model's collected configs are still present but it
+  was never added to the export MODELS dict. The user no longer uses this model
+  and wants it excluded from the xlsx/JSON only (code and collected data kept).
+- Changes:
+  - `scripts/interpolation/fill_batch_evaluation_xlsx.py`: added
+    `EXCLUDED_MODEL_TYPES = {"guo2023_mst"}` plus a `--exclude` CLI flag; rows
+    whose model type is excluded are skipped and reported as "Settings skipped".
+  - `scripts/interpolation/export_benchmark_json.py`: added the same
+    `EXCLUDED_MODEL_TYPES` constant and `--exclude` flag; excluded rows are
+    skipped before the unknown-model check.
+- Impact: Re-running `fill_batch_evaluation_xlsx.py && export_benchmark_json.py`
+  now produces the workbook and leaderboard JSON without `guo2023_mst`, without
+  deleting its code or collected results.

@@ -23,14 +23,14 @@
 
 experiment:
   name: interp_park2022_cfunet_paper
-  output_dir: /cloud/cloud-s3fs
+  output_dir: results
   seed: 42
-  device: cuda:0
+  device: cuda:1
 
 data:
   segy:
-    path: /cloud/cloud-s3fs/seismic_shotper0.8.segy
-    traces_per_shot: 120
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
+    traces_per_shot: 201
     time_downsample: 1
   test_ratio: 0.1
   loader:
@@ -49,7 +49,7 @@ preprocess:
   patch_normalize: true
   patch_norm_eps: 1.0e-6
   patch_time: 128          # paper-explicit patch size (synthetic)
-  patch_trace: 64
+  patch_trace: 128
   patch_overlap: 0.5
   max_shots: null
 
@@ -94,7 +94,7 @@ scheduler:
   params: {}
 
 train:
-  epochs: 80          # paper-explicit (up to 20 epochs)
+  epochs: 50          # paper-explicit (up to 20 epochs)
   eval_interval: 1
   ckpt_interval: 5
   vis_interval: 5
@@ -118,7 +118,7 @@ paper_alignment:
   alpha_synthetic: paper-explicit (1.0, Table I)
   mask_ratio_train: paper-explicit (50%-87.5% random)
   mask_ratio_validation: paper-explicit (75% fixed; use eval75 config)
-  patch_size: repository-adaptation (64x128; paper 128x128, 120-trace cloud data)
+  patch_size: paper-explicit (128x128)
   optimizer: paper-explicit (Adam)
   learning_rate: paper-explicit (5e-5 synthetic)
   batch_size: paper-explicit (32)

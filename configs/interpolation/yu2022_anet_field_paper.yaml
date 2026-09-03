@@ -24,8 +24,8 @@ experiment:
 
 data:
   segy:
-    path: /path/to/mobil_avo_viking_graben_line12.sgy   # placeholder — set to local data
-    traces_per_shot: 120
+    path: /NAS/czt/mount/chengzhitong/data/SEGC3/SEG_45Shot_shots1-9.sgy
+    traces_per_shot: 201
     time_downsample: 1
   test_ratio: 0.2
   loader:

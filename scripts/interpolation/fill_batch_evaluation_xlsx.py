@@ -43,6 +43,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _NAME_RE = re.compile(r"^interp_(.+)_seed([0-9]+)_(.+)$")
 
+# Model types excluded from the benchmark workbook (kept in collected/ but no
+# longer reported).
+EXCLUDED_MODEL_TYPES = {"guo2023_mst"}
+
 # Fallback column headers used when the target workbook has no existing sheet
 # to copy from.  Must mirror the "Multiples" sheet layout.
 HEADERS = [
@@ -218,6 +222,10 @@ def parse_args() -> argparse.Namespace:
         "--seeds", type=str, default="42 43 44",
         help="Space-separated seeds to aggregate (default '42 43 44').",
     )
+    parser.add_argument(
+        "--exclude", type=str, default="",
+        help="Extra model types to skip, space-separated (default excludes 'guo2023_mst').",
+    )
     return parser.parse_args()
 
 
@@ -228,6 +236,9 @@ def main() -> None:
     params_dir = _resolve(args.params_dir)
     output = _resolve(args.output)
     seeds = [int(s) for s in args.seeds.split()]
+    excluded = set(EXCLUDED_MODEL_TYPES)
+    if args.exclude.strip():
+        excluded |= {s for s in args.exclude.split() if s}
 
     if not config_dir.is_dir():
         print(f"ERROR: config dir not found: {config_dir}", file=sys.stderr)
@@ -254,6 +265,7 @@ def main() -> None:
 
     rows: List[List[Any]] = []
     missing: List[str] = []
+    skipped: List[str] = []
     for setting_key in sorted(settings):
         cfg_paths = settings[setting_key]
         first_cfg = cfg_paths[0]
@@ -266,6 +278,10 @@ def main() -> None:
             pass
 
         label = _method_label(base_name, model_type)
+
+        if model_type in excluded:
+            skipped.append(label)
+            continue
 
         # Collect per-seed metrics.
         per_seed: List[Dict[str, Any]] = []
@@ -295,6 +311,9 @@ def main() -> None:
     print(f"Settings with results : {len(rows)}")
     print(f"Settings missing      : {len(missing)}")
     for lab in missing:
+        print(f"  {lab}")
+    print(f"Settings skipped      : {len(skipped)}")
+    for lab in skipped:
         print(f"  {lab}")
     print(f"Sheet 'Interpolation' written to: {output}")
     print("Model parameter counts (from checkpoints):")
